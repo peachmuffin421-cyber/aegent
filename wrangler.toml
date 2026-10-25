@@ -1,0 +1,68 @@
+# ============================================================================
+# ÆI SEED RELAY — WRANGLER CONFIGURATION
+# ============================================================================
+# Cloudflare Worker deployment manifest.
+#
+# This is the ONLY wrangler.toml in the ÆI Seed system. It lives
+# exclusively in the aei-seed-relay repository. The aei-seed-backend
+# repository does NOT contain a copy. This guarantees:
+#   - exactly one `wrangler deploy` command can publish the Worker
+#   - the Worker name 'aei-seed-relay' cannot collide with a second
+#     deployment
+#   - no deploy-order race can overwrite the live Worker with a stale copy
+#
+# Usage (from aei-seed-relay/ repo root):
+#   npm install -g wrangler        # or: npx wrangler
+#   wrangler login
+#   wrangler secret put RELAY_KEY  # optional shared-secret gate
+#   wrangler deploy
+#
+# After deploy, the printed URL (e.g. https://aei-seed-relay.<sub>.workers.dev)
+# is what you assign to the Heroku config var RELAY_URL.
+#
+# vFinal Edition 2: no wrangler.toml change. The Worker gains the wider
+# link extraction (href + src + action) from the vFinal Edition 2
+# audit. The compatibility_date is unchanged.
+# ============================================================================
+
+name = "aei-seed-relay"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# Workers Free tier: 100,000 requests/day.
+# At CRAWL_INTERVAL=3s, one Heroku dyno burns ~28,800 relay hits/day for
+# the crawl loop alone, plus retries on failure — well within the free
+# ceiling even with a handful of restart events.
+#
+# The Worker is a STATELESS fetch proxy. It has no state to persist, no
+# queues to drain, and no timers. Each request is: fetch the target URL,
+# extract title + hash + links, return JSON. The only state is
+# env.RELAY_KEY (managed by Wrangler secrets), and even that is
+# consulted on read only.
+#
+# Observability: enable Workers Logs if you want per-request telemetry.
+[observability]
+enabled = false
+
+# ----------------------------------------------------------------------------
+# OPTIONAL — SHARED-SECRET GATE
+# ----------------------------------------------------------------------------
+# Do NOT inline the secret here. Set it once via:
+#   wrangler secret put RELAY_KEY
+# Wrangler stores it encrypted on Cloudflare's side and injects it as
+# env.RELAY_KEY inside worker.js. If absent, the gate is skipped.
+#
+# [vars]
+# RELAY_KEY = ""
+
+# ----------------------------------------------------------------------------
+# OPTIONAL — CUSTOM DOMAIN
+# ----------------------------------------------------------------------------
+# If you own a zone on Cloudflare, uncomment and replace with your hostname:
+#
+# routes = [
+#   { pattern = "seed-relay.example.com/*", zone_name = "example.com" }
+# ]
+#
+# Then set the Heroku config var to match:
+#   heroku config:set RELAY_URL="https://seed-relay.example.com" -a your-seed-app-name
