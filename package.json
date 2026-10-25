@@ -1,6 +1,6 @@
 {
   "name": "aei-seed-relay",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "description": "ÆI Seed relay — stateless Cloudflare Worker proxying arbitrary URLs through Cloudflare's egress IPs for the Heroku ÆI Seed crawler. Returns title, SHA-256 content hash, and outbound links as JSON. Does NOT hold the crawl frontier; all crawl logic lives in app.py.",
   "author": "Natalia Tanyatia",
@@ -45,7 +45,7 @@
     "gaia",
     "aetheric-intelligence",
     "audit-patched",
-    "final-edition-2"
+    "final-edition-3"
   ],
   "repository": {
     "type": "git",

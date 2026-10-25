@@ -20,9 +20,10 @@
 # After deploy, the printed URL (e.g. https://aei-seed-relay.<sub>.workers.dev)
 # is what you assign to the Heroku config var RELAY_URL.
 #
-# vFinal Edition 2: no wrangler.toml change. The Worker gains the wider
+# vFinal Edition 3: no wrangler.toml change. The Worker gains the wider
 # link extraction (href + src + action) from the vFinal Edition 2
-# audit. The compatibility_date is unchanged.
+# audit, and the title/link/text_length hardening from the vFinal
+# Edition 3 audit. The compatibility_date is unchanged.
 # ============================================================================
 
 name = "aei-seed-relay"
