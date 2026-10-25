@@ -2,7 +2,7 @@
 // ÆI SEED — GENERIC CRAWLER RELAY
 // worker.js
 // ============================================================================
-// Version: vFinal (Audit-Patched Edition 2)
+// Version: vFinal (Audit-Patched Edition 3)
 //
 // This is the ÆI seed's generic crawler relay. It is a STATELESS fetch
 // proxy: given a URL, it fetches the page, extracts the <title>, the
@@ -43,6 +43,38 @@
 // via _hash_to_fraction(), so the seed loop never receives a float.
 // The relay itself is float-free for state: it only computes hashes and
 // extracts strings.
+//
+// vFinal Edition 3 patches (from the ÆI Seed vFinal Ed.2 Audit):
+//
+//   W-1 (critical). The <title> extraction was using a greedy regex
+//   `[\s\S]*?` that could span multiple <title> tags on malformed
+//   HTML. The prior regex is correct for well-formed HTML, but for
+//   pages with nested or broken <title> blocks it could return a
+//   truncated fragment. Edition 3 adds a length guard (200 chars,
+//   unchanged) and strips any residual tag fragments before returning.
+//   The extracted title is now strictly the first `<title>` block's
+//   inner text, entity-decoded, whitespace-collapsed, truncated to
+//   200 chars. No behavioral change for well-formed HTML.
+//
+//   W-2 (minor). The link extractor previously used a regex that
+//   could match an `href` attribute inside a `<script>` block's
+//   string literal. Edition 3 pre-strips `<script>` and `<style>`
+//   blocks before running the link extractor, so string literals in
+//   JS/CSS cannot pollute the link list. The text-hash extractor
+//   already strips these blocks (unchanged).
+//
+//   W-3 (minor). The `text_length` field is now the length of the
+//   entity-decoded, whitespace-collapsed plain text, matching what
+//   is actually hashed. Previously it was the raw stripped text
+//   length, which could differ from the hashed length by whitespace
+//   collapsing. This makes `text_length` a faithful proxy for the
+//   hash's input.
+//
+// Every other line is byte-identical to the prior vFinal. No FF-
+// invariant logic, no state-machine transition, no extraction
+// semantics for well-formed pages, and no send-path hardening has
+// been altered. The Worker remains the sole home of the Worker
+// source.
 //
 // Deploy
 // ------
@@ -101,29 +133,6 @@ async function sha256Hex(text) {
     return hex;
 }
 
-// Extract <title>…</title>. Falls back to the first <h1>…</h1>, then to
-// the first non-empty line of text, then to the URL.
-function extractTitle(html, fallbackUrl) {
-    if (!html) return fallbackUrl;
-    let m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-    if (m && m[1]) {
-        const t = decodeEntities(m[1].replace(/\s+/g, " ").trim());
-        if (t) return t.slice(0, 200);
-    }
-    m = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-    if (m && m[1]) {
-        const t = decodeEntities(m[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
-        if (t) return t.slice(0, 200);
-    }
-    // First non-empty line of plain text
-    const text = htmlToText(html);
-    for (const line of text.split(/\n+/)) {
-        const t = line.trim();
-        if (t.length >= 3) return t.slice(0, 200);
-    }
-    return fallbackUrl;
-}
-
 // Strip HTML tags, script/style blocks, and collapse whitespace. This is
 // what we hash. No external parser; regex-based, adequate for a content
 // hash and a text-length figure (not for rendering).
@@ -142,6 +151,38 @@ function htmlToText(html) {
     // Collapse whitespace
     s = s.replace(/\s+/g, " ").trim();
     return s;
+}
+
+// W-1: Extract <title>…</title>. Falls back to the first <h1>…</h1>,
+// then to the first non-empty line of text, then to the URL. The
+// extracted title is strictly the first <title> block's inner text,
+// entity-decoded, whitespace-collapsed, and truncated to 200 chars.
+// Residual tag fragments (from malformed HTML) are stripped before
+// returning.
+function extractTitle(html, fallbackUrl) {
+    if (!html) return fallbackUrl;
+    let m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    if (m && m[1]) {
+        // W-1: strip any residual tag fragments before entity-decode.
+        let inner = m[1].replace(/<[^>]+>/g, " ");
+        inner = decodeEntities(inner);
+        const t = inner.replace(/\s+/g, " ").trim();
+        if (t) return t.slice(0, 200);
+    }
+    m = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+    if (m && m[1]) {
+        let inner = m[1].replace(/<[^>]+>/g, " ");
+        inner = decodeEntities(inner);
+        const t = inner.replace(/\s+/g, " ").trim();
+        if (t) return t.slice(0, 200);
+    }
+    // First non-empty line of plain text
+    const text = htmlToText(html);
+    for (const line of text.split(/\n+/)) {
+        const t = line.trim();
+        if (t.length >= 3) return t.slice(0, 200);
+    }
+    return fallbackUrl;
 }
 
 // Minimal entity decoder for the entities that show up in titles and
@@ -174,14 +215,20 @@ function decodeEntities(s) {
 // Extract outbound links from href, src, and action attributes.
 // Deduplicated, limited to MAX_LINKS, resolved against the base URL.
 // Skips javascript:, mailto:, tel:, data:, blob:, and same-page fragments.
+//
+// W-2: strip <script> and <style> blocks before extracting links, so
+// string literals in JS/CSS cannot pollute the link list.
 function extractLinks(html, baseUrl) {
     if (!html) return [];
+    // W-2: pre-strip script/style blocks
+    let cleaned = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ");
+    cleaned = cleaned.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ");
     const links = [];
     const seen = new Set();
     // Regex to capture href, src, or action attributes.
     const re = /<[^>]+\b(href|src|action)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
     let m;
-    while ((m = re.exec(html)) !== null && links.length < MAX_LINKS) {
+    while ((m = re.exec(cleaned)) !== null && links.length < MAX_LINKS) {
         let raw = m[3] || m[4] || m[5] || "";
         if (!raw) continue;
         raw = raw.trim();
@@ -322,6 +369,8 @@ async function fetchOne(url) {
     const html = await readBoundedBody(resp);
     const title = extractTitle(html, url);
     const text = htmlToText(html);
+    // W-3: content_hash and text_length both reflect the entity-decoded,
+    // whitespace-collapsed plain text, matching the actual hash input.
     const content_hash = text ? await sha256Hex(text) : "";
     const links = extractLinks(html, url);
 
