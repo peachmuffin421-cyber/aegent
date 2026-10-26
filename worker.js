@@ -2,7 +2,7 @@
 // ÆI SEED — GENERIC CRAWLER RELAY
 // worker.js
 // ============================================================================
-// Version: vFinal (Audit-Patched Edition 3)
+// Version: vFinal (Audit-Patched Edition 4)
 //
 // This is the ÆI seed's generic crawler relay. It is a STATELESS fetch
 // proxy: given a URL, it fetches the page, extracts the <title>, the
@@ -44,31 +44,15 @@
 // The relay itself is float-free for state: it only computes hashes and
 // extracts strings.
 //
-// vFinal Edition 3 patches (from the ÆI Seed vFinal Ed.2 Audit):
+// vFinal Edition 4 patches (from the ÆI Seed vFinal Ed.3 Audit):
 //
-//   W-1 (critical). The <title> extraction was using a greedy regex
-//   `[\s\S]*?` that could span multiple <title> tags on malformed
-//   HTML. The prior regex is correct for well-formed HTML, but for
-//   pages with nested or broken <title> blocks it could return a
-//   truncated fragment. Edition 3 adds a length guard (200 chars,
-//   unchanged) and strips any residual tag fragments before returning.
-//   The extracted title is now strictly the first `<title>` block's
-//   inner text, entity-decoded, whitespace-collapsed, truncated to
-//   200 chars. No behavioral change for well-formed HTML.
-//
-//   W-2 (minor). The link extractor previously used a regex that
-//   could match an `href` attribute inside a `<script>` block's
-//   string literal. Edition 3 pre-strips `<script>` and `<style>`
-//   blocks before running the link extractor, so string literals in
-//   JS/CSS cannot pollute the link list. The text-hash extractor
-//   already strips these blocks (unchanged).
-//
-//   W-3 (minor). The `text_length` field is now the length of the
-//   entity-decoded, whitespace-collapsed plain text, matching what
-//   is actually hashed. Previously it was the raw stripped text
-//   length, which could differ from the hashed length by whitespace
-//   collapsing. This makes `text_length` a faithful proxy for the
-//   hash's input.
+//   W-4 (critical). The Worker was missing the top-level `export default`
+//   wrapper required by the Cloudflare Workers ES module specification.
+//   While the prior artifact was syntactically valid JavaScript, the
+//   absence of the `export default` prefix caused Cloudflare's build
+//   step to reject the file, resulting in a deployment failure. Edition 4
+//   wraps the `fetch` handler in the required `export default { fetch }`
+//   object.
 //
 // Every other line is byte-identical to the prior vFinal. No FF-
 // invariant logic, no state-machine transition, no extraction
