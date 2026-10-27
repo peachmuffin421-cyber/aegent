@@ -44,22 +44,6 @@
 // The relay itself is float-free for state: it only computes hashes and
 // extracts strings.
 //
-// vFinal Edition 4 patches (from the ÆI Seed vFinal Ed.3 Audit):
-//
-//   W-4 (critical). The Worker was missing the top-level `export default`
-//   wrapper required by the Cloudflare Workers ES module specification.
-//   While the prior artifact was syntactically valid JavaScript, the
-//   absence of the `export default` prefix caused Cloudflare's build
-//   step to reject the file, resulting in a deployment failure. Edition 4
-//   wraps the `fetch` handler in the required `export default { fetch }`
-//   object.
-//
-// Every other line is byte-identical to the prior vFinal. No FF-
-// invariant logic, no state-machine transition, no extraction
-// semantics for well-formed pages, and no send-path hardening has
-// been altered. The Worker remains the sole home of the Worker
-// source.
-//
 // Deploy
 // ------
 //   wrangler secret put RELAY_KEY   # optional, but recommended
@@ -137,7 +121,7 @@ function htmlToText(html) {
     return s;
 }
 
-// W-1: Extract <title>…</title>. Falls back to the first <h1>…</h1>,
+// Extract <title>…</title>. Falls back to the first <h1>…</h1>,
 // then to the first non-empty line of text, then to the URL. The
 // extracted title is strictly the first <title> block's inner text,
 // entity-decoded, whitespace-collapsed, and truncated to 200 chars.
@@ -147,7 +131,7 @@ function extractTitle(html, fallbackUrl) {
     if (!html) return fallbackUrl;
     let m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
     if (m && m[1]) {
-        // W-1: strip any residual tag fragments before entity-decode.
+        // strip any residual tag fragments before entity-decode.
         let inner = m[1].replace(/<[^>]+>/g, " ");
         inner = decodeEntities(inner);
         const t = inner.replace(/\s+/g, " ").trim();
@@ -199,12 +183,11 @@ function decodeEntities(s) {
 // Extract outbound links from href, src, and action attributes.
 // Deduplicated, limited to MAX_LINKS, resolved against the base URL.
 // Skips javascript:, mailto:, tel:, data:, blob:, and same-page fragments.
-//
-// W-2: strip <script> and <style> blocks before extracting links, so
+// Strips <script> and <style> blocks before extracting links, so
 // string literals in JS/CSS cannot pollute the link list.
 function extractLinks(html, baseUrl) {
     if (!html) return [];
-    // W-2: pre-strip script/style blocks
+    // pre-strip script/style blocks
     let cleaned = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ");
     cleaned = cleaned.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ");
     const links = [];
@@ -353,7 +336,7 @@ async function fetchOne(url) {
     const html = await readBoundedBody(resp);
     const title = extractTitle(html, url);
     const text = htmlToText(html);
-    // W-3: content_hash and text_length both reflect the entity-decoded,
+    // content_hash and text_length both reflect the entity-decoded,
     // whitespace-collapsed plain text, matching the actual hash input.
     const content_hash = text ? await sha256Hex(text) : "";
     const links = extractLinks(html, url);
