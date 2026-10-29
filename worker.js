@@ -2,7 +2,7 @@
 // ÆI SEED — GENERIC CRAWLER RELAY
 // worker.js
 // ============================================================================
-// Version: vFinal (Audit-Patched Edition 4)
+// Version: vFinal (Audit-Patched Edition 5)
 //
 // This is the ÆI seed's generic crawler relay. It is a STATELESS fetch
 // proxy: given a URL, it fetches the page, extracts the <title>, the
@@ -376,7 +376,7 @@ export default {
             return jsonResponse({
                 ok: true,
                 service: "aei-crawler-relay",
-                version: "final",
+                version: "final-ed5",
                 gated: Boolean(env.RELAY_KEY),
                 endpoints: [
                     "GET /?url=<https-url>",
@@ -392,7 +392,8 @@ export default {
         // Optional shared-secret gate
         if (env.RELAY_KEY) {
             const presented = request.headers.get("X-Relay-Key") || "";
-            if (presented !== env.RELAY_KEY) {
+            const urlKey = url.searchParams.get("key") || "";
+            if (presented !== env.RELAY_KEY && urlKey !== env.RELAY_KEY) {
                 return jsonResponse({
                     ok: false,
                     error: "unauthorized",
