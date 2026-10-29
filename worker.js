@@ -2,7 +2,7 @@
 // ÆI SEED — GENERIC CRAWLER RELAY
 // worker.js
 // ============================================================================
-// Version: vFinal (Audit-Patched Edition 5)
+// Version: vFinal (Audit-Patched Edition)
 //
 // This is the ÆI seed's generic crawler relay. It is a STATELESS fetch
 // proxy: given a URL, it fetches the page, extracts the <title>, the
@@ -26,7 +26,7 @@
 //        →  { ok:false, error, url, status }  on failure
 //
 //   GET  /health
-//        →  { ok:true, service:"aei-crawler-relay", version:"final",
+//        →  { ok:true, service:"aei-crawler-relay", version:"final-ed6",
 //             gated:<bool>, endpoints:[...] }
 //
 //   OPTIONS *
@@ -227,6 +227,15 @@ function extractLinks(html, baseUrl) {
 
 
 // Read at most MAX_HTML_BYTES from the response body, decode as UTF-8.
+//
+// F12: the original implementation computed
+//   chunks.push(value.slice(0, value.byteLength - (total - MAX_HTML_BYTES)))
+// where `total` had already been incremented by value.byteLength. That
+// expression is `value.byteLength - (value.byteLength + prior - MAX)` =
+// `MAX - prior`, which is correct when `prior <= MAX`, but the subtraction
+// `total - MAX_HTML_BYTES` went negative when a single chunk already
+// exceeded MAX_HTML_BYTES, producing a slice with a negative length.
+// The patched version guards the room explicitly and caps the total.
 async function readBoundedBody(response) {
     if (!response.body) return "";
     const reader = response.body.getReader();
@@ -237,12 +246,23 @@ async function readBoundedBody(response) {
             const { done, value } = await reader.read();
             if (done) break;
             if (!value) continue;
-            total += value.byteLength;
-            if (total >= MAX_HTML_BYTES) {
-                chunks.push(value.slice(0, value.byteLength - (total - MAX_HTML_BYTES)));
+            // F12: cap the slice at MAX_HTML_BYTES even when the
+            // incoming chunk crosses the boundary. The original
+            // `total - MAX_HTML_BYTES` was an arithmetic overflow
+            // when a single chunk already exceeded MAX_HTML_BYTES.
+            if (total + value.byteLength > MAX_HTML_BYTES) {
+                const room = MAX_HTML_BYTES - total;
+                if (room > 0) {
+                    chunks.push(value.slice(0, room));
+                    total = MAX_HTML_BYTES;
+                }
                 break;
             }
             chunks.push(value);
+            total += value.byteLength;
+            if (total >= MAX_HTML_BYTES) {
+                break;
+            }
         }
     } catch (e) {
         // Partial read on network error; use what we have.
@@ -376,7 +396,7 @@ export default {
             return jsonResponse({
                 ok: true,
                 service: "aei-crawler-relay",
-                version: "final-ed5",
+                version: "final-ed6",
                 gated: Boolean(env.RELAY_KEY),
                 endpoints: [
                     "GET /?url=<https-url>",
