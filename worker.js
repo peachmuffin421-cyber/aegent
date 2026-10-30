@@ -2,7 +2,7 @@
 // ÆI SEED — GENERIC CRAWLER RELAY
 // worker.js
 // ============================================================================
-// Version: vFinal (Audit-Patched Edition 5)
+// Version: vFinal (Audit-Patched Edition 6 - Relay-hardened)
 //
 // This is the ÆI seed's generic crawler relay. It is a STATELESS fetch
 // proxy: given a URL, it fetches the page, extracts the <title>, the
@@ -51,8 +51,8 @@
 // ============================================================================
 
 const UA_CRAWLER = "Mozilla/5.0 (compatible; AEI-Seed-Crawler/1.0; +https://aei-seed.example/bot)";
-const FETCH_TIMEOUT_MS = 10000;
-const MAX_HTML_BYTES = 512 * 1024;   // truncate page bodies at 512 KiB
+const FETCH_TIMEOUT_MS = 20000;
+const MAX_HTML_BYTES = 768 * 1024;   // truncate page bodies at 512 KiB
 const MAX_LINKS = 64;                // return at most 64 outbound links
 const ALLOWED_PROTOCOLS = ["http:", "https:"];
 
@@ -266,94 +266,116 @@ async function readBoundedBody(response) {
 // ============================================================================
 async function fetchOne(url) {
     const startedAt = Date.now();
-    let resp;
-    try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-        resp = await fetch(url, {
-            method: "GET",
-            redirect: "follow",
-            headers: {
-                "User-Agent": UA_CRAWLER,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Cache-Control": "no-cache",
-            },
-            cf: {
-                cacheTtl: 60,
-                cacheEverything: false,
-                scrapeShield: false,
-            },
-            signal: controller.signal,
-        });
-        clearTimeout(timer);
-    } catch (e) {
-        const elapsed = Date.now() - startedAt;
-        const isTimeout = (e && (e.name === "AbortError" || /timeout/i.test(String(e))));
-        return {
-            ok: false,
-            url,
-            error: isTimeout ? "fetch_timeout" : "fetch_error",
-            detail: String(e && e.message ? e.message : e),
-            elapsed_ms: elapsed,
-            status: 0,
-        };
+    let lastErr = null;
+    // internal retry loop for transient CF/Wikipedia RSTs
+    for (let attempt = 0; attempt < 3; attempt++) {
+        let resp;
+        try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+            resp = await fetch(url, {
+                method: "GET",
+                redirect: "follow",
+                headers: {
+                    "User-Agent": UA_CRAWLER,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Cache-Control": "no-cache, no-store",
+                    "Pragma": "no-cache",
+                },
+                cf: {
+                    cacheTtl: 10,
+                    cacheEverything: false,
+                    scrapeShield: false,
+                },
+                signal: controller.signal,
+            });
+            clearTimeout(timer);
+            // handle retryable status
+            if (resp.status === 429 || resp.status === 502 || resp.status === 503 || resp.status === 525 || resp.status === 520) {
+                lastErr = `http_${resp.status}_retryable`;
+                const backoff = 400 * (attempt + 1) + Math.random() * 300;
+                await new Promise(r => setTimeout(r, backoff));
+                continue;
+            }
+            const status = resp.status;
+            if (!resp.ok) {
+                return {
+                    ok: false,
+                    url,
+                    error: "http_" + status,
+                    status,
+                    elapsed_ms: Date.now() - startedAt,
+                };
+            }
+            const contentType = (resp.headers.get("content-type") || "").toLowerCase();
+            if (contentType && !contentType.includes("html") && !contentType.includes("xml") && !contentType.includes("text")) {
+                return {
+                    ok: true,
+                    url,
+                    title: url,
+                    content_hash: "",
+                    links: [],
+                    text_length: 0,
+                    fetched_at: new Date().toISOString(),
+                    provider: "crawler-relay",
+                    status,
+                    content_type: contentType,
+                    elapsed_ms: Date.now() - startedAt,
+                };
+            }
+            const html = await readBoundedBody(resp);
+            const text = htmlToText(html);
+            const title = extractTitle(html, url, text);
+            const content_hash = text ? await sha256Hex(text) : "";
+            const links = extractLinks(html, url);
+            return {
+                ok: true,
+                url,
+                title,
+                content_hash,
+                links,
+                text_length: text.length,
+                fetched_at: new Date().toISOString(),
+                provider: "crawler-relay",
+                status,
+                content_type: contentType,
+                elapsed_ms: Date.now() - startedAt,
+                attempts: attempt + 1,
+            };
+        } catch (e) {
+            const elapsed = Date.now() - startedAt;
+            const msg = String(e && e.message ? e.message : e);
+            const isTimeout = (e && (e.name === "AbortError" || /timeout/i.test(msg)));
+            const isRetryable = /UNEXPECTED_EOF|EOF|525|502|reset|ECONNRESET/i.test(msg) || isTimeout;
+            lastErr = e;
+            if (isRetryable && attempt < 2) {
+                const backoff = 500 * (attempt + 1) + Math.random() * 400;
+                await new Promise(r => setTimeout(r, backoff));
+                continue;
+            }
+            return {
+                ok: false,
+                url,
+                error: isTimeout ? "fetch_timeout" : "fetch_error",
+                detail: msg,
+                elapsed_ms: elapsed,
+                status: 0,
+                attempts: attempt + 1,
+            };
+        }
     }
-
-    const status = resp.status;
-    if (!resp.ok) {
-        return {
-            ok: false,
-            url,
-            error: "http_" + status,
-            status,
-            elapsed_ms: Date.now() - startedAt,
-        };
-    }
-
-    const contentType = (resp.headers.get("content-type") || "").toLowerCase();
-    // Skip non-HTML content (images, PDFs, etc.). We still return the
-    // fetch as successful so the frontier can advance, but the record
-    // has an empty title and zero links.
-    if (contentType && !contentType.includes("html") && !contentType.includes("xml") && !contentType.includes("text")) {
-        return {
-            ok: true,
-            url,
-            title: url,
-            content_hash: "",
-            links: [],
-            text_length: 0,
-            fetched_at: new Date().toISOString(),
-            provider: "crawler-relay",
-            status,
-            content_type: contentType,
-            elapsed_ms: Date.now() - startedAt,
-        };
-    }
-
-    const html = await readBoundedBody(resp);
-    const text = htmlToText(html);
-    const title = extractTitle(html, url, text);
-    // content_hash and text_length both reflect the entity-decoded,
-    // whitespace-collapsed plain text, matching the actual hash input.
-    const content_hash = text ? await sha256Hex(text) : "";
-    const links = extractLinks(html, url);
-
     return {
-        ok: true,
+        ok: false,
         url,
-        title,
-        content_hash,
-        links,
-        text_length: text.length,
-        fetched_at: new Date().toISOString(),
-        provider: "crawler-relay",
-        status,
-        content_type: contentType,
+        error: "fetch_error_after_retry",
+        detail: String(lastErr),
         elapsed_ms: Date.now() - startedAt,
+        status: 0,
     };
 }
+
 
 // ============================================================================
 // ENTRY POINT
@@ -375,7 +397,7 @@ export default {
             return jsonResponse({
                 ok: true,
                 service: "aei-crawler-relay",
-                version: "final-ed5",
+                version: "final-ed6-relay-hardened",
                 gated: Boolean(env.RELAY_KEY),
                 endpoints: [
                     "GET /?url=<https-url>",
