@@ -2,7 +2,7 @@
 // ÆI SEED — GENERIC CRAWLER RELAY
 // worker.js
 // ============================================================================
-// Version: vFinal (Audit-Patched Edition 6 - Relay-hardened)
+// Version: vFinal (Audit-Patched Edition 7 - Relay-hardened + Cache + 30s)
 //
 // This is the ÆI seed's generic crawler relay. It is a STATELESS fetch
 // proxy: given a URL, it fetches the page, extracts the <title>, the
@@ -51,8 +51,8 @@
 // ============================================================================
 
 const UA_CRAWLER = "Mozilla/5.0 (compatible; AEI-Seed-Crawler/1.0; +https://aei-seed.example/bot)";
-const FETCH_TIMEOUT_MS = 20000;
-const MAX_HTML_BYTES = 768 * 1024;   // truncate page bodies at 512 KiB
+const FETCH_TIMEOUT_MS = 30000;
+const MAX_HTML_BYTES = 768 * 1024;
 const MAX_LINKS = 64;                // return at most 64 outbound links
 const ALLOWED_PROTOCOLS = ["http:", "https:"];
 
@@ -326,17 +326,17 @@ async function fetchOne(url) {
                 };
             }
             const html = await readBoundedBody(resp);
-            const text = htmlToText(html);
-            const title = extractTitle(html, url, text);
-            const content_hash = text ? await sha256Hex(text) : "";
+            const textContent = htmlToText(html);
+            const title = extractTitle(html, url, textContent);
+            const content_hash = textContent ? await sha256Hex(textContent) : "";
             const links = extractLinks(html, url);
-            return {
+            const result = {
                 ok: true,
                 url,
                 title,
                 content_hash,
                 links,
-                text_length: text.length,
+                text_length: textContent.length,
                 fetched_at: new Date().toISOString(),
                 provider: "crawler-relay",
                 status,
@@ -344,6 +344,15 @@ async function fetchOne(url) {
                 elapsed_ms: Date.now() - startedAt,
                 attempts: attempt + 1,
             };
+            try {
+                const cache = caches.default;
+                const cacheKey = new Request(url, { method: "GET" });
+                const cacheResp = new Response(JSON.stringify(result), {
+                    headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=300" }
+                });
+                await cache.put(cacheKey, cacheResp);
+            } catch (e) {}
+            return result;
         } catch (e) {
             const elapsed = Date.now() - startedAt;
             const msg = String(e && e.message ? e.message : e);
@@ -397,7 +406,7 @@ export default {
             return jsonResponse({
                 ok: true,
                 service: "aei-crawler-relay",
-                version: "final-ed6-relay-hardened",
+                version: "final-ed7-relay-hardened-cache-30s",
                 gated: Boolean(env.RELAY_KEY),
                 endpoints: [
                     "GET /?url=<https-url>",
