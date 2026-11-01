@@ -216,6 +216,11 @@ function extractLinks(html, baseUrl) {
             continue;
         }
         if (!isValidHttpUrl(resolved)) continue;
+        // Ed8: filter Wikimedia auth/meta noise that causes 502 loops
+        try {
+            const low = resolved.toLowerCase();
+            if (low.includes("meta.wikimedia.org") || low.includes("auth.wikimedia.org") || low.includes("wikimedia.org/w/api.php") || low.includes("wikimedia.org/wiki/Special:")) continue;
+        } catch(e) {}
         // Strip trailing #fragment for dedupe purposes
         const stripped = resolved.split("#")[0];
         if (seen.has(stripped)) continue;
@@ -408,7 +413,7 @@ export default {
             return jsonResponse({
                 ok: true,
                 service: "aei-crawler-relay",
-                version: "final-ed8-r12-fixed-no-keepalive-blocklist",
+                version: "final-ed9-r12-fixed-int-limit-blocklist",
                 gated: Boolean(env.RELAY_KEY),
                 endpoints: [
                     "GET /?url=<https-url>",
