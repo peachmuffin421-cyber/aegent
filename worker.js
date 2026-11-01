@@ -2,7 +2,7 @@
 // ÆI SEED — GENERIC CRAWLER RELAY
 // worker.js
 // ============================================================================
-// Version: vFinal (Audit-Patched Edition 7 - Relay-hardened + Cache + 30s)
+// Version: vFinal Ed8 (Audit-Patched - Relay-hardened + No-Keepalive + Wikimedia-block + R12-fix)
 //
 // This is the ÆI seed's generic crawler relay. It is a STATELESS fetch
 // proxy: given a URL, it fetches the page, extracts the <title>, the
@@ -50,7 +50,7 @@
 //   wrangler deploy
 // ============================================================================
 
-const UA_CRAWLER = "Mozilla/5.0 (compatible; AEI-Seed-Crawler/1.0; +https://aei-seed.example/bot)";
+const UA_CRAWLER = "AEI-Seed/1.0 (+https://peachmuffin421-cyber.github.io/aeindex/; contact nataliatanyatia@gmail.com) Mozilla/5.0 (compatible; AEI-Seed-Crawler/1.0)";
 const FETCH_TIMEOUT_MS = 30000;
 const MAX_HTML_BYTES = 768 * 1024;
 const MAX_LINKS = 64;                // return at most 64 outbound links
@@ -280,14 +280,16 @@ async function fetchOne(url) {
                     "User-Agent": UA_CRAWLER,
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     "Accept-Language": "en-US,en;q=0.9",
-                    "Accept-Encoding": "gzip, deflate, br",
                     "Cache-Control": "no-cache, no-store",
                     "Pragma": "no-cache",
+                    "Connection": "close",
                 },
                 cf: {
-                    cacheTtl: 10,
+                    cacheTtl: 0,
                     cacheEverything: false,
                     scrapeShield: false,
+                    mirage: false,
+                    polish: "off",
                 },
                 signal: controller.signal,
             });
@@ -406,7 +408,7 @@ export default {
             return jsonResponse({
                 ok: true,
                 service: "aei-crawler-relay",
-                version: "final-ed7-relay-hardened-cache-30s",
+                version: "final-ed8-r12-fixed-no-keepalive-blocklist",
                 gated: Boolean(env.RELAY_KEY),
                 endpoints: [
                     "GET /?url=<https-url>",
