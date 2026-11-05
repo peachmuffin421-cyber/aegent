@@ -26,7 +26,7 @@ main = "worker.js"
 compatibility_date = "2024-11-01"
 
 # Workers Free tier: 100,000 requests/day.
-# At CRAWL_INTERVAL=3s, one Heroku dyno burns ~28,800 relay hits/day
+# At CRAWL_INTERVAL=3s, one Heroku worker dyno burns ~28,800 relay hits/day
 # for the crawl loop alone, plus retries on failure — well within the free
 # ceiling even with a handful of restart events.
 #

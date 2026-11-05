@@ -2,7 +2,7 @@
 // ÆI SEED — GENERIC CRAWLER RELAY
 // worker.js
 // ============================================================================
-// Version: vFinal Ed8 (Audit-Patched - Relay-hardened + No-Keepalive + Wikimedia-block + R12-fix)
+// Version: vFinal Ed40 ultimate H12fix (Audit-Patched: Relay-hardened + No-Keepalive + Wikimedia-block + R12-fix + H12-light-cache)
 //
 // This is the ÆI seed's generic crawler relay. It is a STATELESS fetch
 // proxy: given a URL, it fetches the page, extracts the <title>, the
@@ -413,7 +413,7 @@ export default {
             return jsonResponse({
                 ok: true,
                 service: "aei-crawler-relay",
-                version: "final-ed9-r12-fixed-int-limit-blocklist",
+                version: "final-ed40-ultimate-safe-frac-r15",
                 gated: Boolean(env.RELAY_KEY),
                 endpoints: [
                     "GET /?url=<https-url>",
