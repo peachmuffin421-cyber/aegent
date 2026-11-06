@@ -62,7 +62,8 @@ const BLOCKED_HOST_SUBSTRINGS = [
     "localhost",
     "169.254.",
     "metadata.google.internal",
-    "::1"
+    "::1",
+    "0.0.0.0"
 ];
 const BLOCKED_PRIVATE_PREFIXES = ["10.", "192.168.", "172."];
 
