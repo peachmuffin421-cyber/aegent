@@ -3,8 +3,8 @@
 // worker.js
 // ============================================================================
 // ÆI Seed — Generic Crawler Relay — worker.js
-// Version: Final Ed.40 H12fix
-// Edition: Second (Audit-Patched: Float-sentinel-fix, Non-HTML hash sentinel)
+// Version: Final
+// Edition: First
 //
 // This is the ÆI seed's generic crawler relay. It is a STATELESS fetch
 // proxy: given a URL, it fetches the page, extracts the <title>, the
@@ -55,12 +55,17 @@
 const UA_CRAWLER = "AEI-Seed/1.0 (+https://peachmuffin421-cyber.github.io/aeindex/; contact nataliatanyatia@gmail.com) Mozilla/5.0 (compatible; AEI-Seed-Crawler/1.0)";
 const FETCH_TIMEOUT_MS = 30000;
 const MAX_HTML_BYTES = 768 * 1024;
-const MAX_LINKS = 64;                // return at most 64 outbound links
+const MAX_LINKS = 64;
 const ALLOWED_PROTOCOLS = ["http:", "https:"];
+const BLOCKED_HOST_SUBSTRINGS = [
+    "127.0.0.1",
+    "localhost",
+    "169.254.",
+    "metadata.google.internal",
+    "::1"
+];
+const BLOCKED_PRIVATE_PREFIXES = ["10.", "192.168.", "172."];
 
-// ============================================================================
-// HELPERS
-// ============================================================================
 function corsHeaders() {
     return {
         "Access-Control-Allow-Origin": "*",
@@ -81,16 +86,33 @@ function jsonResponse(body, status = 200) {
     });
 }
 
+function isPrivateIp(hostname) {
+    if (!hostname) return true;
+    const h = hostname.toLowerCase();
+    for (const sub of BLOCKED_HOST_SUBSTRINGS) {
+        if (h.includes(sub)) return true;
+    }
+    for (const pref of BLOCKED_PRIVATE_PREFIXES) {
+        if (h.startsWith(pref)) return true;
+    }
+    if (h.startsWith("172.")) {
+        const second = parseInt(h.split(".")[1] || "0", 10);
+        if (second >= 16 && second <= 31) return true;
+    }
+    return false;
+}
+
 function isValidHttpUrl(u) {
     try {
         const parsed = new URL(u);
-        return ALLOWED_PROTOCOLS.includes(parsed.protocol);
+        if (!ALLOWED_PROTOCOLS.includes(parsed.protocol)) return false;
+        if (isPrivateIp(parsed.hostname)) return false;
+        return true;
     } catch (e) {
         return false;
     }
 }
 
-// SHA-256 of a string, returned as a lowercase hex string.
 async function sha256Hex(text) {
     const encoder = new TextEncoder();
     const data = encoder.encode(text);
@@ -103,37 +125,22 @@ async function sha256Hex(text) {
     return hex;
 }
 
-// Strip HTML tags, script/style blocks, and collapse whitespace. This is
-// what we hash. No external parser; regex-based, adequate for a content
-// hash and a text-length figure (not for rendering).
 function htmlToText(html) {
     if (!html) return "";
     let s = html;
-    // Remove script and style blocks entirely
     s = s.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ");
     s = s.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ");
-    // Remove HTML comments
     s = s.replace(/<!--[\s\S]*?-->/g, " ");
-    // Replace tags with spaces
     s = s.replace(/<[^>]+>/g, " ");
-    // Decode entities
     s = decodeEntities(s);
-    // Collapse whitespace
     s = s.replace(/\s+/g, " ").trim();
     return s;
 }
 
-// Extract <title>…</title>. Falls back to the first <h1>…</h1>,
-// then to the first non-empty line of text, then to the URL. The
-// extracted title is strictly the first <title> block's inner text,
-// entity-decoded, whitespace-collapsed, and truncated to 200 chars.
-// Residual tag fragments (from malformed HTML) are stripped before
-// returning.
 function extractTitle(html, fallbackUrl, precomputedText) {
     if (!html) return fallbackUrl;
     let m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
     if (m && m[1]) {
-        // strip any residual tag fragments before entity-decode.
         let inner = m[1].replace(/<[^>]+>/g, " ");
         inner = decodeEntities(inner);
         const t = inner.replace(/\s+/g, " ").trim();
@@ -146,7 +153,6 @@ function extractTitle(html, fallbackUrl, precomputedText) {
         const t = inner.replace(/\s+/g, " ").trim();
         if (t) return t.slice(0, 200);
     }
-    // First non-empty line of plain text
     const text = precomputedText || htmlToText(html);
     for (const line of text.split(/\n+/)) {
         const t = line.trim();
@@ -155,9 +161,6 @@ function extractTitle(html, fallbackUrl, precomputedText) {
     return fallbackUrl;
 }
 
-// Minimal entity decoder for the entities that show up in titles and
-// prose. Non-exhaustive, but adequate: &amp; &lt; &gt; &quot; &#39; &nbsp;
-// &mdash; &ndash; &hellip; &copy; &#NNN; &#xHH;
 function decodeEntities(s) {
     if (!s) return "";
     return s
@@ -166,146 +169,85 @@ function decodeEntities(s) {
         .replace(/&gt;/g, ">")
         .replace(/&quot;/g, '"')
         .replace(/&#39;/g, "'")
-        .replace(/&apos;/g, "'")
         .replace(/&nbsp;/g, " ")
         .replace(/&mdash;/g, "—")
         .replace(/&ndash;/g, "–")
         .replace(/&hellip;/g, "…")
         .replace(/&copy;/g, "©")
-        .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
-            const code = parseInt(hex, 16);
-            return Number.isFinite(code) ? String.fromCodePoint(code) : "";
+        .replace(/&#(\d+);/g, (_, n) => {
+            try { return String.fromCharCode(parseInt(n, 10)); } catch { return ""; }
         })
-        .replace(/&#([0-9]+);/g, (_, dec) => {
-            const code = parseInt(dec, 10);
-            return Number.isFinite(code) ? String.fromCodePoint(code) : "";
+        .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => {
+            try { return String.fromCharCode(parseInt(h, 16)); } catch { return ""; }
         });
 }
 
-// Extract outbound links from href, src, and action attributes.
-// Deduplicated, limited to MAX_LINKS, resolved against the base URL.
-// Skips javascript:, mailto:, tel:, data:, blob:, and same-page fragments.
-// Strips <script> and <style> blocks before extracting links, so
-// string literals in JS/CSS cannot pollute the link list.
 function extractLinks(html, baseUrl) {
     if (!html) return [];
-    // pre-strip script/style blocks
-    let cleaned = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ");
-    cleaned = cleaned.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ");
     const links = [];
     const seen = new Set();
-    // Regex to capture href, src, or action attributes.
-    const re = /<[^>]+\b(href|src|action)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+    const re = /<a\b[^>]*?href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
     let m;
-    while ((m = re.exec(cleaned)) !== null && links.length < MAX_LINKS) {
-        let raw = m[3] || m[4] || m[5] || "";
-        if (!raw) continue;
-        raw = raw.trim();
-        if (!raw) continue;
-        const lower = raw.toLowerCase();
-        if (lower.startsWith("javascript:") ||
-            lower.startsWith("mailto:") ||
-            lower.startsWith("tel:") ||
-            lower.startsWith("data:") ||
-            lower.startsWith("blob:") ||
-            lower.startsWith("#")) {
-            continue;
-        }
-        let resolved;
+    while ((m = re.exec(html)) !== null && links.length < MAX_LINKS) {
+        const href = (m[1] || m[2] || m[3] || "").trim();
+        if (!href) continue;
+        if (href.startsWith("#") || href.startsWith("mailto:") || href.startsWith("tel:") || href.startsWith("javascript:")) continue;
         try {
-            resolved = new URL(raw, baseUrl).toString();
-        } catch (e) {
-            continue;
-        }
-        if (!isValidHttpUrl(resolved)) continue;
-        // Ed8: filter Wikimedia auth/meta noise that causes 502 loops
-        try {
-            const low = resolved.toLowerCase();
-            if (low.includes("meta.wikimedia.org") || low.includes("auth.wikimedia.org") || low.includes("wikimedia.org/w/api.php") || low.includes("wikimedia.org/wiki/Special:")) continue;
-        } catch(e) {}
-        // Strip trailing #fragment for dedupe purposes
-        const stripped = resolved.split("#")[0];
-        if (seen.has(stripped)) continue;
-        seen.add(stripped);
-        links.push(stripped);
+            const abs = new URL(href, baseUrl).toString();
+            if (!isValidHttpUrl(abs)) continue;
+            if (seen.has(abs)) continue;
+            seen.add(abs);
+            links.push(abs);
+        } catch (e) {}
     }
     return links;
 }
 
-// Read at most MAX_HTML_BYTES from the response body, decode as UTF-8.
-async function readBoundedBody(response) {
-    if (!response.body) return "";
-    const reader = response.body.getReader();
+async function readBoundedBody(resp) {
+    const reader = resp.body ? resp.body.getReader() : null;
+    if (!reader) {
+        const text = await resp.text();
+        return text.slice(0, MAX_HTML_BYTES);
+    }
+    let received = 0;
     const chunks = [];
-    let total = 0;
+    const decoder = new TextDecoder();
     try {
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            if (!value) continue;
-            total += value.byteLength;
-            if (total >= MAX_HTML_BYTES) {
-                chunks.push(value.slice(0, value.byteLength - (total - MAX_HTML_BYTES)));
+            received += value.length;
+            if (received > MAX_HTML_BYTES) {
+                const remaining = MAX_HTML_BYTES - (received - value.length);
+                if (remaining > 0) chunks.push(decoder.decode(value.slice(0, remaining), { stream: true }));
                 break;
             }
-            chunks.push(value);
+            chunks.push(decoder.decode(value, { stream: true }));
         }
-    } catch (e) {
-        // Partial read on network error; use what we have.
     } finally {
-        try { reader.releaseLock(); } catch (e) {}
+        try { reader.releaseLock(); } catch {}
     }
-    const combined = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
-    let off = 0;
-    for (const c of chunks) {
-        combined.set(c, off);
-        off += c.byteLength;
-    }
-    try {
-        return new TextDecoder("utf-8", { fatal: false }).decode(combined);
-    } catch (e) {
-        return "";
-    }
+    chunks.push(decoder.decode());
+    return chunks.join("");
 }
 
-// ============================================================================
-// FETCH ONE URL
-// ============================================================================
 async function fetchOne(url) {
     const startedAt = Date.now();
     let lastErr = null;
-    // internal retry loop for transient CF/Wikipedia RSTs
     for (let attempt = 0; attempt < 3; attempt++) {
-        let resp;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
         try {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-            resp = await fetch(url, {
+            const resp = await fetch(url, {
                 method: "GET",
-                redirect: "follow",
-                headers: {
-                    "User-Agent": UA_CRAWLER,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Cache-Control": "no-cache, no-store",
-                    "Pragma": "no-cache",
-                    "Connection": "close",
-                },
-                cf: {
-                    cacheTtl: 0,
-                    cacheEverything: false,
-                    scrapeShield: false,
-                    mirage: false,
-                    polish: "off",
-                },
+                headers: { "User-Agent": UA_CRAWLER, "Accept": "text/html,application/xhtml+xml,text/*;q=0.9,*/*;q=0.8" },
                 signal: controller.signal,
+                redirect: "follow",
             });
-            clearTimeout(timer);
-            // handle retryable status
-            if (resp.status === 429 || resp.status === 502 || resp.status === 503 || resp.status === 525 || resp.status === 520) {
-                lastErr = `http_${resp.status}_retryable`;
-                const backoff = 400 * (attempt + 1) + Math.random() * 300;
-                await new Promise(r => setTimeout(r, backoff));
+            clearTimeout(timeout);
+            if (resp.status === 429) {
+                const retryAfter = parseInt(resp.headers.get("retry-after") || "2", 10) * 1000;
+                await new Promise(r => setTimeout(r, Math.min(retryAfter, 5000) + 400));
                 continue;
             }
             const status = resp.status;
@@ -337,7 +279,7 @@ async function fetchOne(url) {
             const html = await readBoundedBody(resp);
             const textContent = htmlToText(html);
             const title = extractTitle(html, url, textContent);
-            const content_hash = textContent ? await sha256Hex(textContent) : "";
+            const content_hash = textContent ? await sha256Hex(textContent) : "00000000000000000000000000000001";
             const links = extractLinks(html, url);
             const result = {
                 ok: true,
@@ -355,7 +297,7 @@ async function fetchOne(url) {
             };
             try {
                 const cache = caches.default;
-                const cacheKey = new Request(url, { method: "GET" });
+                const cacheKey = new Request("https://aei-relay-cache/" + encodeURIComponent(url), { method: "GET" });
                 const cacheResp = new Response(JSON.stringify(result), {
                     headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=300" }
                 });
@@ -363,6 +305,7 @@ async function fetchOne(url) {
             } catch (e) {}
             return result;
         } catch (e) {
+            clearTimeout(timeout);
             const elapsed = Date.now() - startedAt;
             const msg = String(e && e.message ? e.message : e);
             const isTimeout = (e && (e.name === "AbortError" || /timeout/i.test(msg)));
@@ -394,15 +337,10 @@ async function fetchOne(url) {
     };
 }
 
-
-// ============================================================================
-// ENTRY POINT
-// ============================================================================
 export default {
     async fetch(request, env) {
         const url = new URL(request.url);
 
-        // CORS preflight
         if (request.method === "OPTIONS") {
             return new Response(null, {
                 status: 204,
@@ -410,7 +348,6 @@ export default {
             });
         }
 
-        // Health — no auth
         if (url.pathname === "/health") {
             return jsonResponse({
                 ok: true,
@@ -428,11 +365,9 @@ export default {
             });
         }
 
-        // Optional shared-secret gate
         if (env.RELAY_KEY) {
             const presented = request.headers.get("X-Relay-Key") || "";
-            const urlKey = url.searchParams.get("key") || "";
-            if (presented !== env.RELAY_KEY && urlKey !== env.RELAY_KEY) {
+            if (presented !== env.RELAY_KEY) {
                 return jsonResponse({
                     ok: false,
                     error: "unauthorized",
@@ -441,7 +376,6 @@ export default {
             }
         }
 
-        // Only GET /?url=<...> is supported
         if (request.method !== "GET") {
             return jsonResponse({
                 ok: false,
