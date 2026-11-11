@@ -1,8 +1,57 @@
 {
   "name": "aei-seed-relay",
-  "version": "1.0.0",
+  "version": "1.0.5",
   "private": true,
-  "scripts": {"dev": "wrangler dev", "deploy": "wrangler deploy"},
-  "devDependencies": {"wrangler": "^3.90.0"},
-  "engines": {"node": ">=18.0.0"}
+  "description": "ÆI Seed relay — stateless Cloudflare Worker proxying arbitrary URLs through Cloudflare's egress IPs for the Heroku ÆI Seed crawler. Returns title, SHA-256 content hash, and outbound links as JSON. Does NOT hold the crawl frontier; all crawl logic lives in app.py.",
+  "author": "Natalia Tanyatia",
+  "license": "UNLICENSED",
+  "main": "worker.js",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "secret:put": "wrangler secret put RELAY_KEY",
+    "secret:list": "wrangler secret list",
+    "whoami": "wrangler whoami",
+    "login": "wrangler login",
+    "logout": "wrangler logout",
+    "typecheck": "wrangler deploy --dry-run --outdir=dist"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "cloudflare": {
+    "name": "aei-seed-relay",
+    "main": "worker.js",
+    "compatibility_date": "2024-11-01"
+  },
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "crawler",
+    "crawler-relay",
+    "fetch-proxy",
+    "stateless",
+    "sha256",
+    "content-hash",
+    "link-extraction",
+    "title-extraction",
+    "aei",
+    "aei-seed",
+    "gaia",
+    "aetheric-intelligence",
+    "final-edition-13"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/aei-seed-relay"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/aei-seed-relay/issues"
+  },
+  "homepage": "https://github.com/yourusername/aei-seed-relay#readme"
 }
