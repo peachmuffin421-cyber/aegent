@@ -1,8 +1,8 @@
 {
-  "name": "aei-seed-relay",
-  "version": "1.0.5",
+  "name": "aei-relay",
+  "version": "4.6.1",
   "private": true,
-  "description": "ÆI Seed relay — stateless Cloudflare Worker proxying arbitrary URLs through Cloudflare's egress IPs for the Heroku ÆI Seed crawler. Returns title, SHA-256 content hash, and outbound links as JSON. Does NOT hold the crawl frontier; all crawl logic lives in app.py.",
+  "description": "Æ TWA fused relay — stateless Cloudflare Worker with two routes: ?url= for crawler fetch (title + SHA-256 text hash + links, SSRF-blocked), ?symbol= for market data (Kraken→Stooq→Binance→CoinGecko→Yahoo). Consumed end-to-end by the fused app.py (CrawlerWorker + MarketTickWorker). Version: Final, First edition.",
   "author": "Natalia Tanyatia",
   "license": "UNLICENSED",
   "main": "worker.js",
@@ -25,7 +25,7 @@
     "node": ">=18.0.0"
   },
   "cloudflare": {
-    "name": "aei-seed-relay",
+    "name": "aei-relay",
     "main": "worker.js",
     "compatibility_date": "2024-11-01"
   },
@@ -40,18 +40,25 @@
     "content-hash",
     "link-extraction",
     "title-extraction",
-    "aei",
-    "aei-seed",
+    "kraken",
+    "stooq",
+    "binance",
+    "coingecko",
+    "yahoo-finance",
+    "market-data",
+    "ae",
+    "ae-twa",
+    "fusion",
     "gaia",
     "aetheric-intelligence",
-    "final-edition-13"
+    "final-edition"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/aei-seed-relay"
+    "url": "https://github.com/yourusername/aei-relay"
   },
   "bugs": {
-    "url": "https://github.com/yourusername/aei-seed-relay/issues"
+    "url": "https://github.com/yourusername/aei-relay/issues"
   },
-  "homepage": "https://github.com/yourusername/aei-seed-relay#readme"
+  "homepage": "https://github.com/yourusername/aei-relay#readme"
 }

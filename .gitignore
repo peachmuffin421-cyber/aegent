@@ -1,21 +1,7 @@
 # ============================================================================
-# ÆI SEED RELAY — .gitignore
-# Repo: aei-seed-relay (Cloudflare Workers)
-# ============================================================================
-#
-# The relay repo contains worker.js plus three config files:
-#   worker.js       (the Worker source)
-#   wrangler.toml   (deployment manifest)
-#   package.json    (Node manifest for wrangler)
-#   README.md       (relay-scoped)
-#
-# Nothing builds. Nothing bundles. The only secret is RELAY_KEY, which is
-# managed by `wrangler secret put` and never written to disk in the repo.
-#
-# The relay is the sole home of the Cloudflare Worker. Do not add a copy of
-# this source to any other repo — that would create a deploy-order race on
-# the Cloudflare Worker named 'aei-seed-relay'.
-#
+# Æ TWA — FUSED RELAY — .gitignore
+# Version: Final, First edition
+# Repo: aei-relay (Cloudflare Workers)
 # ============================================================================
 
 # ----------------------------------------------------------------------------
