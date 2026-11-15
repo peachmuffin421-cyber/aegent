@@ -13,7 +13,9 @@
 # Usage (from aei-relay/ repo root):
 #   npm install -g wrangler        # or: npx wrangler
 #   wrangler login
-#   wrangler secret put RELAY_KEY  # optional shared-secret gate
+#   wrangler secret put BACKEND_URL   # backend base URL, never committed
+#   wrangler secret put ALLOWED_ORIGIN  # Pages origin, never committed
+#   wrangler secret put RELAY_KEY     # optional shared-secret gate
 #   wrangler deploy
 #
 # After deploy, the printed URL (e.g. https://ae-relay.<sub>.workers.dev)
@@ -24,9 +26,11 @@ name = "ae-relay"
 main = "worker.js"
 compatibility_date = "2024-01-01"
 
-[vars]
-BACKEND_URL = "https://aei-37a29e073070.herokuapp.com/"
-ALLOWED_ORIGIN = "https://peachmuffin421-cyber.github.io"
+# NO [vars] BLOCK WITH REAL URLS. BACKEND_URL and ALLOWED_ORIGIN are
+# secrets, set with `wrangler secret put`. Committing them here would put
+# a backend URL in a file, which the audit forbids. The Worker reads them
+# from env at request time. If BACKEND_URL is unset, the Worker returns
+# 502, never a fake body.
 
 # Workers Free tier: 100,000 requests/day.
 # The Worker is a stateless proxy. It has no state to persist, no queues
@@ -59,4 +63,4 @@ enabled = false
 # ]
 #
 # Then set the Heroku config var to match:
-#   heroku config:set BACKEND_URL="https://aei-37a29e073070.herokuapp.com/" -a your-app-name
+#   heroku config:set BACKEND_URL="<BACKEND-URL>" -a <HEROKU-APP>

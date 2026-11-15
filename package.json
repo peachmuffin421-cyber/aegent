@@ -44,10 +44,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/peachmuffin421-cyber/aeindex"
+    "url": "https://github.com/<OWNER>/<RELAY-REPO>"
   },
   "bugs": {
-    "url": "https://github.com/peachmuffin421-cyber/aeindex/issues"
+    "url": "https://github.com/<OWNER>/<RELAY-REPO>/issues"
   },
-  "homepage": "https://github.com/peachmuffin421-cyber/aeindex#readme"
+  "homepage": "https://github.com/<OWNER>/<RELAY-REPO>#readme"
 }
