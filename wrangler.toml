@@ -7,7 +7,7 @@
 # in the aei-relay repository. The aei-backend repository does NOT contain a
 # copy. This guarantees:
 #   - exactly one `wrangler deploy` command can publish the Worker
-#   - the Worker name 'aei-relay' cannot collide with a second deployment
+#   - the Worker name 'ae-relay' cannot collide with a second deployment
 #   - no deploy-order race can overwrite the live Worker with a stale copy
 #
 # Usage (from aei-relay/ repo root):
@@ -16,18 +16,23 @@
 #   wrangler secret put RELAY_KEY  # optional shared-secret gate
 #   wrangler deploy
 #
-# After deploy, the printed URL (e.g. https://aei-relay.<sub>.workers.dev)
-# is what you assign to the Heroku config var RELAY_URL.
+# After deploy, the printed URL (e.g. https://ae-relay.<sub>.workers.dev)
+# is what you assign to the frontend via ?backend= or to Heroku config.
 # ============================================================================
 
-name = "aei-relay"
+name = "ae-relay"
 main = "worker.js"
-compatibility_date = "2024-11-01"
+compatibility_date = "2024-01-01"
+
+[vars]
+BACKEND_URL = "https://aei-37a29e073070.herokuapp.com/"
+ALLOWED_ORIGIN = "https://peachmuffin421-cyber.github.io"
 
 # Workers Free tier: 100,000 requests/day.
-# At CRAWL_INTERVAL=3s and 3s market ticks, one Heroku dyno burns
-# ~57,600 relay hits/day for the loops alone, plus retries on failure —
-# still well within the free ceiling.
+# The Worker is a stateless proxy. It has no state to persist, no queues
+# to drain, and no timers. Each request is: proxy to backend, return JSON.
+# The only state is env.RELAY_KEY (managed by Wrangler secrets), and even
+# that is consulted on read only.
 #
 # Observability: enable Workers Logs for per-request telemetry.
 [observability]
@@ -54,4 +59,4 @@ enabled = false
 # ]
 #
 # Then set the Heroku config var to match:
-#   heroku config:set RELAY_URL="https://relay.example.com" -a your-app-name
+#   heroku config:set BACKEND_URL="https://aei-37a29e073070.herokuapp.com/" -a your-app-name

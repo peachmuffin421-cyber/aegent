@@ -2,7 +2,7 @@
   "name": "aei-relay",
   "version": "4.6.1",
   "private": true,
-  "description": "Æ TWA fused relay — stateless Cloudflare Worker with two routes: ?url= for crawler fetch (title + SHA-256 text hash + links, SSRF-blocked), ?symbol= for market data (Kraken→Stooq→Binance→CoinGecko→Yahoo). Consumed end-to-end by the fused app.py (CrawlerWorker + MarketTickWorker). Version: Final, First edition.",
+  "description": "AE TWA relay — stateless Cloudflare Worker. Proxies /miniapp-state, /cs-feedback, /cs-state, /step, /handshake, /teach, /say, /crawler-enqueue, /reset, /order, /notify-aea to the backend. Backend authoritative. No synthetic bars. Final, First edition.",
   "author": "Natalia Tanyatia",
   "license": "UNLICENSED",
   "main": "worker.js",
@@ -25,27 +25,16 @@
     "node": ">=18.0.0"
   },
   "cloudflare": {
-    "name": "aei-relay",
+    "name": "ae-relay",
     "main": "worker.js",
-    "compatibility_date": "2024-11-01"
+    "compatibility_date": "2024-01-01"
   },
   "keywords": [
     "cloudflare",
     "workers",
-    "crawler",
-    "crawler-relay",
-    "fetch-proxy",
+    "proxy",
     "stateless",
-    "sha256",
-    "content-hash",
-    "link-extraction",
-    "title-extraction",
-    "kraken",
-    "stooq",
-    "binance",
-    "coingecko",
-    "yahoo-finance",
-    "market-data",
+    "backend-authoritative",
     "ae",
     "ae-twa",
     "fusion",
@@ -55,10 +44,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/aei-relay"
+    "url": "https://github.com/peachmuffin421-cyber/aeindex"
   },
   "bugs": {
-    "url": "https://github.com/yourusername/aei-relay/issues"
+    "url": "https://github.com/peachmuffin421-cyber/aeindex/issues"
   },
-  "homepage": "https://github.com/yourusername/aei-relay#readme"
+  "homepage": "https://github.com/peachmuffin421-cyber/aeindex#readme"
 }
