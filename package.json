@@ -1,8 +1,8 @@
 {
   "name": "aei-relay",
-  "version": "4.6.1",
+  "version": "1.0-final-first",
   "private": true,
-  "description": "AE TWA relay — stateless Cloudflare Worker. Proxies /miniapp-state, /cs-feedback, /cs-state, /step, /handshake, /teach, /say, /crawler-enqueue, /reset, /order, /notify-aea to the backend. Backend authoritative. No synthetic bars. Final, First edition.",
+  "description": "AE TWA relay — stateless Cloudflare Worker. Proxies /miniapp-state, /cs-state, /cs-feedback, /step, /handshake, /teach, /say, /encode-syllable, /crawler-enqueue, /reset, /order, /order/close, /notify-aea, /fvg, /log, DELETE /orders, DELETE /fvg/<id> to the backend. Backend authoritative. No synthetic bars. Final, First edition.",
   "author": "Natalia Tanyatia",
   "license": "UNLICENSED",
   "main": "worker.js",
@@ -40,7 +40,7 @@
     "fusion",
     "gaia",
     "aetheric-intelligence",
-    "final-edition"
+    "final-first"
   ],
   "repository": {
     "type": "git",

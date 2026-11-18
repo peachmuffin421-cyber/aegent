@@ -7,14 +7,16 @@
 //   - AEI seed loop: prime -> outward lattice -> Hopf -> s2=r2 -> DbZ -> I
 //     -> SelfEvolution. Frontend for AEI is the TWA entry page.
 //   - AEEA market engine: bars -> 13 normalised indicators + Ichimoku ->
-//     m/n/delta -> regime -> BB x58 -> P_arc -> signal iff delta-gate ->
+//     m/n/delta (max 14: 13 loop + 1 Ichimoku; thresholds 69.33/30.66) ->
+//     regime -> BBx58 (null until 58 bars) -> P_arc -> signal iff delta-gate ->
 //     orders/trailing/FVG.
 //   - Fused on ONE ordered feed: each tick in arrival order advances the
 //     AEEA bar ring AND is lifted to exact Fraction x for the AEI seed loop
 //     via x = abs(price - prevPrice)/10000 (or 1/100 when zero).
 //   - This worker does NOT implement any of that. It only proxies the one
 //     ordered state from the backend to the frontend. Backend authoritative.
-//     Frontend never computes truth. It only renders /miniapp-state.
+//     Frontend never computes truth and never sends x. It only renders /miniapp-state.
+//     x is lifted in the backend from backend price and prevPrice.
 //
 // Audit directives, enforced in this file:
 //   - NO SYNTHETIC BARS EVER. No random walk, no fallback synthetic, no
@@ -80,13 +82,16 @@
 //     as X-Relay-Key on the upstream fetch. Never required from the client.
 //
 // Endpoints (exact allowlist - anything not listed here is 404):
-//   GET:    /health, /miniapp-state, /cs-state, /ohlcv, /signals,
-//           /diagnostics, /orders, /log, /toasts, /lattice-state,
-//           /fibration-state, /aea-notification, /config, /probe
+//   GET:    /health, /miniapp-state, /cs-state, /cs-feedback, /ohlcv, /signals,
+//           /diagnostics, /orders, /log, /toasts, /lattice-state, /seed-state,
+//           /fibration-state, /symbolic-state, /observer-integral,
+//           /evolution-state, /crawler-state, /aea-notification, /config,
+//           /probe, /fvg, /state, /projection, /regime-map, /indicators,
+//           /settings
 //   POST:   /cs-feedback, /step, /handshake, /teach, /say,
 //           /crawler-enqueue, /reset, /order, /order/close, /notify-aea,
 //           /encode-syllable, /log
-//   DELETE: /orders
+//   DELETE: /orders, /fvg/<id>
 //   OPTIONS: CORS preflight for any listed path. Any other method is 405.
 //   GET /: generic relay text, no backend URL. GET /robots.txt: disallow.
 //   GET /favicon.ico: 204, no body.
@@ -115,12 +120,13 @@
 // ============================================================================
 
 var UPSTREAM_TIMEOUT_MS = 30000;
-var WORKER_NAME = 'AE-TWA-Worker/1.0';
+var WORKER_NAME = 'AE-TWA-Worker/1.0-final-first';
 
 var GET_ROUTES = {
   '/health': true,
   '/miniapp-state': true,
   '/cs-state': true,
+  '/cs-feedback': true,
   '/ohlcv': true,
   '/signals': true,
   '/diagnostics': true,
@@ -128,10 +134,21 @@ var GET_ROUTES = {
   '/log': true,
   '/toasts': true,
   '/lattice-state': true,
+  '/seed-state': true,
   '/fibration-state': true,
+  '/symbolic-state': true,
+  '/observer-integral': true,
+  '/evolution-state': true,
+  '/crawler-state': true,
   '/aea-notification': true,
   '/config': true,
-  '/probe': true
+  '/probe': true,
+  '/fvg': true,
+  '/state': true,
+  '/projection': true,
+  '/regime-map': true,
+  '/indicators': true,
+  '/settings': true
 };
 
 var POST_ROUTES = {
@@ -202,7 +219,8 @@ function corsHeaders(requestOrigin, env) {
     headers['Access-Control-Allow-Credentials'] = 'true';
     return headers;
   }
-  headers['Access-Control-Allow-Origin'] = parsed.list[0];
+  // Unmatched origin: omit Allow-Origin entirely. Browser blocks the response.
+  // Never fall back to list[0] and never reflect an arbitrary origin.
   return headers;
 }
 
@@ -536,7 +554,7 @@ export default {
     if (method === 'POST' && POST_ROUTES[pathname]) {
       return proxyToBackend(request, env, pathname, search, 'POST');
     }
-    if (method === 'DELETE' && DELETE_ROUTES[pathname]) {
+    if (method === 'DELETE' && (DELETE_ROUTES[pathname] || pathname.indexOf('/fvg/') === 0)) {
       return proxyToBackend(request, env, pathname, search, 'DELETE');
     }
     return jsonResponse(404, {
