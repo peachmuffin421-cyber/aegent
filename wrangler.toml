@@ -1,6 +1,5 @@
 # ============================================================================
 # Æ TWA — FUSED RELAY — WRANGLER CONFIGURATION
-# Version: Final, First edition
 # Repo: aei-relay (Cloudflare Workers)
 # ============================================================================
 # This is the ONLY wrangler.toml in the Æ TWA system. It lives exclusively
@@ -8,7 +7,7 @@
 # copy. This guarantees:
 #   - exactly one `wrangler deploy` command can publish the Worker
 #   - the Worker name 'ae-relay' cannot collide with a second deployment
-#   - no deploy-order race can overwrite the live Worker with a stale copy
+#   - no deploy ordering can overwrite the live Worker with a stale copy
 #
 # Usage (from aei-relay/ repo root):
 #   npm install -g wrangler        # or: npx wrangler
@@ -18,7 +17,7 @@
 #   wrangler secret put RELAY_KEY     # optional shared-secret gate
 #   wrangler deploy
 #
-# After deploy, the printed URL (e.g. https://ae-relay.<sub>.workers.dev)
+# After deploy, the printed URL (e.g. <RELAY-URL>)
 # is what you assign to the frontend via ?backend= or to Heroku config.
 # ============================================================================
 
@@ -28,7 +27,7 @@ compatibility_date = "2024-01-01"
 
 # NO [vars] BLOCK WITH REAL URLS. BACKEND_URL and ALLOWED_ORIGIN are
 # secrets, set with `wrangler secret put`. Committing them here would put
-# a backend URL in a file, which the audit forbids. The Worker reads them
+# a backend URL in a file, which the Constraints forbid. The Worker reads them
 # from env at request time. If BACKEND_URL is unset, the Worker returns
 # 502, never a fake body.
 

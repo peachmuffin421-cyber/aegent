@@ -1,5 +1,5 @@
 // ============================================================================
-// AE TWA - WORKER.JS - RELAY (AEI + AEEA FUSED), Final, First edition - REVISED
+// AE TWA - WORKER.JS - RELAY (AEI + AEEA FUSED)
 // Cloudflare Worker. Stateless relay plus minimal relay info page.
 // One system. Backend authoritative. No synthetic bars ever.
 //
@@ -8,17 +8,23 @@
 //     -> SelfEvolution. Frontend for AEI is the TWA entry page.
 //   - AEEA market engine: bars -> 13 normalised indicators + Ichimoku ->
 //     m/n/delta (max 14: 13 loop + 1 Ichimoku; thresholds 69.33/30.66) ->
-//     regime -> BBx58 (null until 58 bars) -> P_arc -> signal iff delta-gate ->
+//     regime -> BB family 3-60 -> P_arc -> signal iff H/L gate ->
 //     orders/trailing/FVG.
 //   - Fused on ONE ordered feed: each tick in arrival order advances the
 //     AEEA bar ring AND is lifted to exact Fraction x for the AEI seed loop
-//     via x = abs(price - prevPrice)/10000 (or 1/100 when zero).
+//     via x lifted in backend from crawler hash primary, price fallback labelled, 1/100 when delta zero.
 //   - This worker does NOT implement any of that. It only proxies the one
 //     ordered state from the backend to the frontend. Backend authoritative.
 //     Frontend never computes truth and never sends x. It only renders /miniapp-state.
-//     x is lifted in the backend from backend price and prevPrice.
+//     x is lifted in the backend only: crawler-hash first (x_source='crawler-hash'), else price-fallback |Δprice|/10000 (x_source='price-fallback'), else 1/100 tick-fallback. Price-fallback x is never presented as FG x. Frontend never computes or sends x.
 //
-// Audit directives, enforced in this file:
+// Identity: AEEA TWA is FF itself. AEI TWA is FG itself. AE TWA is
+//   the FF/FG fusion. FF takes precedence for market engine. FG takes
+//   precedence for seed loop.
+// Intelligence gate (FG, backend): I >= 2/3. Unity is I = 1.
+//   Coherence gate is s = r, checked as s2 = r2. Worker never computes
+//   I. It forwards backend state verbatim.
+// Constraints in this file:
 //   - NO SYNTHETIC BARS EVER. No random walk, no fallback synthetic, no
 //     standalone synthetic, no synthetic in worker, app, or frontend.
 //     Worker never generates bars, never fills gaps, never returns a
@@ -47,11 +53,12 @@
 //   - NO FAKE 100.00 VALUES. 13D grid returns null per indicator until it
 //     has enough real bars. Worker never fills nulls, never fills 100.00.
 //   - AUTH: Header only. X-Telegram-Init-Data. Never query-string auth.
-//     Worker forwards X-Telegram-Init-Data and Authorization (TMA) headers
+//     Worker forwards X-Telegram-Init-Data and Authorization headers
 //     verbatim to the backend. Worker never validates, never logs, never
 //     stores, never echoes, and never puts auth into a query string or a
-//     response body. Worker strips auth_init_data, auth, and backend params
-//     from the upstream query string so auth can never leak in a URL.
+//     response body. Worker strips auth_init_data, auth, backend, initData,
+//     and init_data params from the upstream query string so auth can never
+//     leak in a URL.
 //     Backend validates HMAC, auth_date within 86400s, and allowlist.
 //   - CORS: Do not reflect Origin when ALLOWED_ORIGIN is '*'. Vary: Origin
 //     always. When ALLOWED_ORIGIN is a list, only an exact match is
@@ -82,7 +89,7 @@
 //     as X-Relay-Key on the upstream fetch. Never required from the client.
 //
 // Endpoints (exact allowlist - anything not listed here is 404):
-//   GET:    /health, /miniapp-state, /cs-state, /cs-feedback, /ohlcv, /signals,
+//   GET:    /?symbol=...&kind=... (FF price relay, upstream for backend poller only; frontend must use /miniapp-state), /?url=... (FG crawler relay, returns title, content_hash, links), /health, /miniapp-state, /cs-state, /cs-feedback, /ohlcv, /signals,
 //           /diagnostics, /orders, /log, /toasts, /lattice-state, /seed-state,
 //           /fibration-state, /symbolic-state, /observer-integral,
 //           /evolution-state, /crawler-state, /aea-notification, /config,
@@ -90,7 +97,7 @@
 //           /settings
 //   POST:   /cs-feedback, /step, /handshake, /teach, /say,
 //           /crawler-enqueue, /reset, /order, /order/close, /notify-aea,
-//           /encode-syllable, /log
+//           /encode-syllable, /log, /fvg, /symbol, /projection/refresh
 //   DELETE: /orders, /fvg/<id>
 //   OPTIONS: CORS preflight for any listed path. Any other method is 405.
 //   GET /: generic relay text, no backend URL. GET /robots.txt: disallow.
@@ -101,7 +108,7 @@
 //     reason:'Backend unreachable, WAITING, no synthetic bars'}. Never 200
 //     with fake data. Never a synthetic bar. Never a placeholder lattice.
 //   - Backend returns synthetic payload: 502, {ok:false, status:'waiting',
-//     reason:'Backend returned synthetic payload, rejected by audit'}.
+//     reason:'Backend returned synthetic payload, rejected by Constraints'}.
 //   - Backend returns any other status (401, 400, 404, 500, ...): passed
 //     through verbatim, status and body unchanged, so the backend stays
 //     authoritative and auth failures are never masked as waiting.
@@ -112,15 +119,10 @@
 //   - Unsupported method: 405, {ok:false, error:'method_not_allowed'}.
 //
 // Deploy: wrangler deploy. No build. No bundler. No node_modules.
-// Version: Final, First edition - Revised (bounded-precision exact rational
-//   backend; this worker is unchanged in behaviour except the audit fixes
-//   listed in the header: auth forwarding, CORS allowlist, no URL leak,
-//   full endpoint allowlist, verbatim body, no-store, query auth stripping,
-//   synthetic deep check, upstream timeout).
 // ============================================================================
 
 var UPSTREAM_TIMEOUT_MS = 30000;
-var WORKER_NAME = 'AE-TWA-Worker/1.0-final-first';
+var WORKER_NAME = 'AE-TWA-Worker';
 
 var GET_ROUTES = {
   '/health': true,
@@ -163,7 +165,10 @@ var POST_ROUTES = {
   '/order/close': true,
   '/notify-aea': true,
   '/encode-syllable': true,
-  '/log': true
+  '/log': true,
+  '/fvg': true,
+  '/symbol': true,
+  '/projection/refresh': true
 };
 
 var DELETE_ROUTES = {
@@ -200,7 +205,7 @@ function corsHeaders(requestOrigin, env) {
   var headers = {};
   headers['Vary'] = 'Origin';
   headers['Access-Control-Allow-Methods'] = 'GET, POST, DELETE, OPTIONS';
-  headers['Access-Control-Allow-Headers'] = 'Content-Type, X-Telegram-Init-Data, Authorization';
+  headers['Access-Control-Allow-Headers'] = 'Content-Type, Accept, X-Telegram-Init-Data, X-Relay-Key, X-Limit, X-Since';
   headers['Access-Control-Max-Age'] = '86400';
   if (parsed.mode === 'star') {
     headers['Access-Control-Allow-Origin'] = '*';
@@ -256,12 +261,12 @@ function syntheticRejectedResponse(requestOrigin, env) {
   return jsonResponse(502, {
     ok: false,
     status: 'waiting',
-    reason: 'Backend returned synthetic payload, rejected by audit'
+    reason: 'Backend returned synthetic payload, rejected by Constraints'
   }, requestOrigin, env);
 }
 
 function containsSynthetic(value, depth) {
-  if (depth > 20) {
+  if (depth > 50) {
     return false;
   }
   if (value === null || value === undefined) {
@@ -275,14 +280,23 @@ function containsSynthetic(value, depth) {
     }
     return false;
   }
+  if (typeof value === 'string') {
+    if (value === 'synthetic') {
+      return true;
+    }
+    return false;
+  }
   if (typeof value === 'object') {
-    if (value.synthetic === true) {
+    if (value.synthetic === true || value.synthetic === 'true') {
       return true;
     }
-    if (value.lattice_points === 0) {
+    if (value.placeholder === true) {
       return true;
     }
-    if (value.lattice === 0) {
+    if (value.lattice_points === 0 || value.lattice_points === '0') {
+      return true;
+    }
+    if (value.lattice === 0 || value.lattice === '0') {
       return true;
     }
     var keys = Object.keys(value);
@@ -301,6 +315,219 @@ function isSyntheticPayload(obj) {
     return false;
   }
   return containsSynthetic(obj, 0);
+}
+
+
+// --- FF PRICE RELAY ---
+// CRYPTO_MAP: canonical symbol -> {kraken pair, binance pair, coingecko id}
+// Pruned live-triple set. CoinGecko-only entries serve usd_24h_vol under volume, not tick volume.
+var CRYPTO_MAP = {
+  "BTC-USD": {kraken: "XBTUSD", binance: "BTCUSDT", coingecko: "bitcoin"},
+  "ETH-USD": {kraken: "ETHUSD", binance: "ETHUSDT", coingecko: "ethereum"},
+  "XRP-USD": {kraken: "XRPUSD", binance: "XRPUSDT", coingecko: "ripple"},
+  "ADA-USD": {kraken: "ADAUSD", binance: "ADAUSDT", coingecko: "cardano"},
+  "SOL-USD": {kraken: "SOLUSD", binance: "SOLUSDT", coingecko: "solana"},
+  "DOGE-USD": {kraken: "DOGEUSD", binance: "DOGEUSDT", coingecko: "dogecoin"},
+  "LTC-USD": {kraken: "LTCUSD", binance: "LTCUSDT", coingecko: "litecoin"},
+  "LINK-USD": {kraken: "LINKUSD", binance: "LINKUSDT", coingecko: "chainlink"},
+  "DOT-USD": {kraken: "DOTUSD", binance: "DOTUSDT", coingecko: "polkadot"},
+  "AVAX-USD": {kraken: "AVAXUSD", binance: "AVAXUSDT", coingecko: "avalanche-2"},
+  "MATIC-USD": {kraken: "MATICUSD", binance: "MATICUSDT", coingecko: "matic-network"},
+  "UNI-USD": {kraken: "UNIUSD", binance: "UNIUSDT", coingecko: "uniswap"},
+  "ATOM-USD": {kraken: "ATOMUSD", binance: "ATOMUSDT", coingecko: "cosmos"},
+  "NEAR-USD": {kraken: "NEARUSD", binance: "NEARUSDT", coingecko: "near"},
+  "FIL-USD": {kraken: "FILUSD", binance: "FILUSDT", coingecko: "filecoin"},
+  "ETC-USD": {kraken: "ETCUSD", binance: "ETCUSDT", coingecko: "ethereum-classic"},
+  "ICP-USD": {kraken: "ICPUSD", binance: "ICPUSDT", coingecko: "internet-computer"},
+  "XLM-USD": {kraken: "XLMUSD", binance: "XLMUSDT", coingecko: "stellar"},
+  "HBAR-USD": {kraken: "HBARUSD", binance: "HBARUSDT", coingecko: "hedera-hashgraph"},
+  "ARB-USD": {kraken: "ARBUSDT", binance: "ARBUSDT", coingecko: "arbitrum"},
+  "OP-USD": {kraken: "OPUSDT", binance: "OPUSDT", coingecko: "optimism"},
+  "SUI-USD": {kraken: "SUIUSDT", binance: "SUIUSDT", coingecko: "sui"},
+  "APT-USD": {kraken: "APTUSDT", binance: "APTUSDT", coingecko: "aptos"},
+  "PEPE-USD": {kraken: "PEPEUSDT", binance: "PEPEUSDT", coingecko: "pepe"},
+  "SHIB-USD": {kraken: "SHIBUSDT", binance: "SHIBUSDT", coingecko: "shiba-inu"},
+  "BCH-USD": {kraken: "BCHUSD", binance: "BCHUSDT", coingecko: "bitcoin-cash"},
+  "TRX-USD": {kraken: "TRXUSD", binance: "TRXUSDT", coingecko: "tron"},
+  "NEO-USD": {kraken: "NEOUSD", binance: "NEOUSDT", coingecko: "neo"},
+  "EOS-USD": {kraken: "EOSUSD", binance: "EOSUSDT", coingecko: "eos"},
+  "AAVE-USD": {kraken: "AAVEUSD", binance: "AAVEUSDT", coingecko: "aave"},
+  "MKR-USD": {kraken: "MKRUSD", binance: "MKRUSDT", coingecko: "maker"},
+  "COMP-USD": {kraken: "COMPUSD", binance: "COMPUSDT", coingecko: "compound-governance-token"},
+  "CRV-USD": {kraken: "CRVUSD", binance: "CRVUSDT", coingecko: "curve-dao-token"},
+  "SNX-USD": {kraken: "SNXUSD", binance: "SNXUSDT", coingecko: "synthetix-network-token"},
+  "SUSHI-USD": {kraken: "SUSHIUSD", binance: "SUSHIUSDT", coingecko: "sushi"},
+  "YFI-USD": {kraken: "YFIUSD", binance: "YFIUSDT", coingecko: "yearn-finance"},
+  "WIF-USD": {kraken: "WIFUSDT", binance: "WIFUSDT", coingecko: "dogwifcoin"},
+  "BONK-USD": {kraken: "BONKUSDT", binance: "BONKUSDT", coingecko: "bonk"},
+  "FLOKI-USD": {kraken: "FLOKIUSDT", binance: "FLOKIUSDT", coingecko: "floki"},
+  "TAO-USD": {kraken: "TAOUSDT", binance: "TAOUSDT", coingecko: "bittensor"},
+  "JUP-USD": {kraken: "JUPUSDT", binance: "JUPUSDT", coingecko: "jupiter-exchange-solana"},
+  "PYTH-USD": {kraken: "PYTHUSDT", binance: "PYTHUSDT", coingecko: "pyth-network"},
+  "FET-USD": {kraken: "FETUSDT", binance: "FETUSDT", coingecko: "fetch-ai"},
+  "GRT-USD": {kraken: "GRTUSD", binance: "GRTUSDT", coingecko: "the-graph"},
+  "LDO-USD": {kraken: "LDOUSDT", binance: "LDOUSDT", coingecko: "lido-dao"},
+  "RNDR-USD": {kraken: "RNDRUSDT", binance: "RNDRUSDT", coingecko: "render-token"},
+  "WLD-USD": {kraken: "WLDUSDT", binance: "WLDUSDT", coingecko: "worldcoin-wld"},
+  "USDT-USD": {kraken: "USDTUSD", binance: "USDTUSDT", coingecko: "tether"},
+  "USDC-USD": {kraken: "USDCUSD", binance: "USDCUSDT", coingecko: "usd-coin"},
+  "DAI-USD": {kraken: "DAIUSD", binance: "DAIUSDT", coingecko: "dai"},
+  "BNB-USD": {kraken: null, binance: null, coingecko: "binancecoin"},
+  "OKB-USD": {kraken: null, binance: null, coingecko: "okb"},
+  "HT-USD": {kraken: null, binance: null, coingecko: "huobi-token"},
+  "KCS-USD": {kraken: null, binance: null, coingecko: "kucoin-shares"}
+};
+var EQUITIES_MAP = {
+  "AAPL": "aapl.us", "MSFT": "msft.us", "GOOGL": "googl.us", "AMZN": "amzn.us", "META": "meta.us",
+  "NVDA": "nvda.us", "TSLA": "tsla.us", "BRK-B": "brk-b.us", "BRK-A": "brk-a.us",
+  "JPM": "jpm.us", "V": "v.us", "JNJ": "jnj.us", "WMT": "wmt.us", "MA": "ma.us"
+};
+async function fetchKraken(pair){
+  var r = await fetch("https://api.kraken.com/0/public/Ticker?pair=" + encodeURIComponent(pair), {headers: {"Accept": "application/json"}});
+  if(!r.ok) throw new Error("kraken http " + r.status);
+  var j = await r.json();
+  if(j.error && j.error.length) throw new Error("kraken " + j.error.join(","));
+  var keys = Object.keys(j.result || {});
+  if(!keys.length) throw new Error("kraken empty result");
+  var t = j.result[keys[0]];
+  var bid = parseFloat((t.b && t.b[0]) || t.c[0]);
+  var ask = parseFloat((t.a && t.a[0]) || t.c[0]);
+  var last = parseFloat(t.c[0]);
+  var vol = parseFloat((t.v && t.v[1]) || (t.v && t.v[0]) || 0);
+  return {price: last, bid: bid, ask: ask, volume: vol, provider: "Kraken"};
+}
+async function fetchBinance(pair){
+  var r = await fetch("https://api.binance.com/api/v3/ticker/24hr?symbol=" + encodeURIComponent(pair), {headers: {"Accept": "application/json"}});
+  if(!r.ok) throw new Error("binance http " + r.status);
+  var j = await r.json();
+  return {price: parseFloat(j.lastPrice), bid: parseFloat(j.bidPrice), ask: parseFloat(j.askPrice), volume: parseFloat(j.volume || 0), provider: "Binance"};
+}
+async function fetchCoinGecko(id){
+  var r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=" + encodeURIComponent(id) + "&vs_currencies=usd&include_24hr_vol=true", {headers: {"Accept": "application/json"}});
+  if(!r.ok) throw new Error("coingecko http " + r.status);
+  var j = await r.json();
+  var e = j[id]; if(!e || e.usd === undefined) throw new Error("coingecko no usd");
+  // CoinGecko-only entries: no tick, volume is usd_24h_vol. Labelled as such.
+  return {price: parseFloat(e.usd), bid: parseFloat(e.usd), ask: parseFloat(e.usd), volume: parseFloat(e.usd_24h_vol || 0), provider: "CoinGecko", volume_note: "usd_24h_vol, not tick volume"};
+}
+async function fetchYahoo(symbol){
+  var y = symbol.replace("-USD", "USD=X").replace("/", "");
+  // For non-crypto Yahoo symbols, use the symbol as-is if it already looks like a Yahoo ticker.
+  if(symbol.indexOf("=F") !== -1 || symbol.indexOf("^") === 0 || /^[A-Z]+$/.test(symbol)) y = symbol;
+  var r = await fetch("https://query1.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(y), {headers: {"Accept": "application/json"}});
+  if(!r.ok) throw new Error("yahoo http " + r.status);
+  var j = await r.json();
+  var res = j.chart && j.chart.result && j.chart.result[0];
+  var meta = res && res.meta;
+  if(!meta || meta.regularMarketPrice === undefined) throw new Error("yahoo no price");
+  return {price: parseFloat(meta.regularMarketPrice), bid: parseFloat(meta.regularMarketPrice), ask: parseFloat(meta.regularMarketPrice), volume: parseFloat(meta.regularMarketVolume || 0), provider: "Yahoo"};
+}
+async function fetchStooq(symbol){
+  var s = EQUITIES_MAP[symbol] || (symbol.toLowerCase().replace("-", ".") + ".us");
+  var r = await fetch("https://stooq.com/q/l/?s=" + encodeURIComponent(s) + "&f=sd2t2ohlcv&h&e=json", {headers: {"Accept": "application/json"}});
+  if(!r.ok) throw new Error("stooq http " + r.status);
+  var j = await r.json();
+  var row = j.symbols && j.symbols[0];
+  if(!row || row.close === undefined || row.close === "N/D") throw new Error("stooq no close");
+  return {price: parseFloat(row.close), bid: parseFloat(row.close), ask: parseFloat(row.close), volume: parseFloat(row.volume || 0), provider: "Stooq"};
+}
+var CRAWLER_BLOCKLIST = ["meta.wikimedia.org", "wikimedia.org/w/api", "thumb.wikimedia.org", "upload.wikimedia.org", "featuredfeed"];
+var CRAWLER_MAX_HTML_BYTES = 524288;
+var CRAWLER_MAX_LINKS = 64;
+var CRAWLER_TIMEOUT_MS = 10000;
+async function handleCrawlerRelay(url, env){
+  var target = url.searchParams.get("url") || "";
+  if(!target) return new Response(JSON.stringify({ok: false, url: target, error: "missing_url", status: 400}), {status: 400, headers: {"Content-Type": "application/json", "Cache-Control": "no-store"}});
+  if(!/^https?:\/\//i.test(target)) return new Response(JSON.stringify({ok: false, url: target, error: "invalid_url", status: 400}), {status: 400, headers: {"Content-Type": "application/json", "Cache-Control": "no-store"}});
+  for(var i=0;i<CRAWLER_BLOCKLIST.length;i++){ if(target.indexOf(CRAWLER_BLOCKLIST[i])!==-1) return new Response(JSON.stringify({ok: false, url: target, error: "url_blocklisted", status: 403}), {status: 403, headers: {"Content-Type": "application/json", "Cache-Control": "no-store"}}); }
+  var start = Date.now();
+  var controller = new AbortController();
+  var timer = setTimeout(function(){ try{ controller.abort(); }catch(e){} }, CRAWLER_TIMEOUT_MS);
+  try{
+    var r = await fetch(target, {headers: {"User-Agent": "Mozilla/5.0 (compatible; AEI-Crawler/1.0)", "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9"}, redirect: "follow", signal: controller.signal});
+    clearTimeout(timer);
+    var ctype = (r.headers.get("Content-Type") || "").toLowerCase();
+    var isHtml = (ctype.indexOf("html")!==-1 || ctype.indexOf("xml")!==-1 || ctype.indexOf("text")!==-1);
+    var buf = await r.arrayBuffer();
+    var sliced = buf.slice(0, CRAWLER_MAX_HTML_BYTES);
+    var text = "";
+    try{ text = new TextDecoder("utf-8").decode(sliced); }catch(e){ text = ""; }
+    var title = "";
+    if(isHtml){
+      var tm = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+      if(tm && tm[1]) title = tm[1].replace(/<[^>]+>/g, "").trim().slice(0,200);
+      if(!title){
+        var hm = text.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+        if(hm && hm[1]) title = hm[1].replace(/<[^>]+>/g, "").trim().slice(0,200);
+      }
+      if(!title){
+        var lines = text.replace(/<[^>]+>/g, " ").split(/\n/);
+        for(var li=0; li<lines.length; li++){ var l = lines[li].trim(); if(l){ title = l.slice(0,200); break; } }
+      }
+      if(!title) title = target;
+    } else {
+      title = "";
+    }
+    var links = [];
+    if(isHtml){
+      var re = /href\s*=\s*["']([^"']+)["']/gi;
+      var lm;
+      while((lm = re.exec(text)) !== null && links.length < CRAWLER_MAX_LINKS){
+        var href = lm[1];
+        try{
+          var abs = new URL(href, target).toString();
+          if(abs.indexOf("http")===0 && links.indexOf(abs)===-1) links.push(abs);
+        }catch(e){}
+      }
+    }
+    var hashHex = "";
+    try{
+      var digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+      var bytes = new Uint8Array(digest);
+      for(var bi=0; bi<bytes.length; bi++){ var h = bytes[bi].toString(16); if(h.length===1) h = "0"+h; hashHex += h; }
+    }catch(e){ hashHex = ""; }
+    var body = {ok: true, url: target, title: title, content_hash: hashHex, links: links, text_length: text.length, provider: "crawler-relay", status: r.status, content_type: ctype, elapsed_ms: Date.now()-start};
+    return new Response(JSON.stringify(body), {status: 200, headers: {"Content-Type": "application/json", "Cache-Control": "no-store"}});
+  }catch(e){
+    clearTimeout(timer);
+    var err = (e && e.name==="AbortError") ? "fetch_timeout" : "fetch_error";
+    return new Response(JSON.stringify({ok: false, url: target, error: err, detail: String((e && e.message) || e), status: 502}), {status: 502, headers: {"Content-Type": "application/json", "Cache-Control": "no-store"}});
+  }
+}
+
+async function handlePriceRelay(url, env){
+  var symbol = (url.searchParams.get("symbol") || "").toUpperCase();
+  var kind = url.searchParams.get("kind") || "ticker";
+  if(!symbol) return new Response(JSON.stringify({ok: false, error: "missing_symbol"}), {status: 400, headers: {"Content-Type": "application/json", "Cache-Control": "no-store"}});
+  var errors = [];
+  // Crypto path: Kraken -> Binance -> CoinGecko -> Yahoo
+  if(CRYPTO_MAP[symbol]){
+    var m = CRYPTO_MAP[symbol];
+    if(m.kraken){ try{ var k = await fetchKraken(m.kraken); return priceOk(symbol, kind, k); }catch(e){ errors.push("kraken:" + e.message); } }
+    if(m.binance){ try{ var b = await fetchBinance(m.binance); return priceOk(symbol, kind, b); }catch(e){ errors.push("binance:" + e.message); } }
+    if(m.coingecko){ try{ var g = await fetchCoinGecko(m.coingecko); return priceOk(symbol, kind, g); }catch(e){ errors.push("coingecko:" + e.message); } }
+    try{ var y = await fetchYahoo(symbol); return priceOk(symbol, kind, y); }catch(e){ errors.push("yahoo:" + e.message); }
+    return new Response(JSON.stringify({ok: false, error: "no_price_for_symbol", symbol: symbol, detail: errors.join(" | ")}), {status: 502, headers: {"Content-Type": "application/json", "Cache-Control": "no-store"}});
+  }
+  // Forex / indices: Yahoo first, then Stooq. Equities / futures: Stooq first, then Yahoo.
+  var yahooFirst = (symbol.indexOf("=X") !== -1) || (symbol.charAt(0) === "^");
+  if (yahooFirst) {
+    try{ var yf = await fetchYahoo(symbol); return priceOk(symbol, kind, yf); }catch(e){ errors.push("yahoo:" + e.message); }
+    try{ var sf = await fetchStooq(symbol); return priceOk(symbol, kind, sf); }catch(e){ errors.push("stooq:" + e.message); }
+  } else {
+    try{ var s = await fetchStooq(symbol); return priceOk(symbol, kind, s); }catch(e){ errors.push("stooq:" + e.message); }
+    try{ var y2 = await fetchYahoo(symbol); return priceOk(symbol, kind, y2); }catch(e){ errors.push("yahoo:" + e.message); }
+  }
+  return new Response(JSON.stringify({ok: false, error: "no_price_for_symbol", symbol: symbol, detail: errors.join(" | ")}), {status: 502, headers: {"Content-Type": "application/json", "Cache-Control": "no-store"}});
+}
+function priceOk(symbol, kind, p){
+  var body = {ok: true, symbol: symbol, kind: kind, price: p.price, bid: p.bid, ask: p.ask, volume: p.volume, provider: p.provider, note: "Upstream for backend poller only. Frontend must use /miniapp-state, never this direct price."};
+  if(p.volume_note) body.volume_note = p.volume_note;
+  if(kind === "ohlcv"){
+    // Price relay does not synthesise OHLCV bars. OHLCV comes from backend /ohlcv.
+    body.note = "ticker only; OHLCV bars come from backend /ohlcv, never synthesised here";
+  }
+  return new Response(JSON.stringify(body), {status: 200, headers: {"Content-Type": "application/json", "Cache-Control": "no-store"}});
 }
 
 function normalizeBackend(env) {
@@ -327,6 +554,8 @@ function cleanUpstreamSearch(search) {
   params.delete('auth_init_data');
   params.delete('auth');
   params.delete('backend');
+  params.delete('initData');
+  params.delete('init_data');
   var out = params.toString();
   return out ? ('?' + out) : '';
 }
@@ -367,11 +596,12 @@ async function proxyToBackend(request, env, pathname, search, method) {
     }
   } catch (e) {}
   try {
-    var authHeader = request.headers.get('Authorization');
-    if (authHeader) {
-      upstreamHeaders['Authorization'] = authHeader;
+    var authz = request.headers.get('Authorization');
+    if (authz) {
+      upstreamHeaders['Authorization'] = authz;
     }
   } catch (e) {}
+  // X-Telegram-Init-Data and Authorization are forwarded for auth.
   try {
     var contentType = request.headers.get('Content-Type');
     if (contentType) {
@@ -526,6 +756,47 @@ export default {
       return jsonResponse(405, { ok: false, error: 'method_not_allowed' }, requestOrigin, env, {
         'Allow': 'GET, POST, DELETE, OPTIONS'
       });
+    }
+    // FG crawler relay: backend calls RELAY_URL/?url=...
+    // If root path carries ?url=, treat as crawler relay. RELAY_KEY gating via X-Relay-Key header when env RELAY_KEY is set.
+    if (pathname === '/' && url.searchParams.has('url')) {
+      try {
+        if (env && env.RELAY_KEY) {
+          var ck = request.headers.get('X-Relay-Key') || '';
+          if (ck !== env.RELAY_KEY) {
+            return jsonResponse(401, { ok: false, error: 'relay_key_required' }, requestOrigin, env);
+          }
+        }
+        var _crawl = await handleCrawlerRelay(url, env);
+        try {
+          var _ch2 = corsHeaders(requestOrigin, env);
+          Object.keys(_ch2).forEach(function(k){ _crawl.headers.set(k, _ch2[k]); });
+        } catch (e) {}
+        return _crawl;
+      } catch (e) {
+        return jsonResponse(502, { ok: false, error: 'crawler_relay_failed', detail: String(e && e.message || e) }, requestOrigin, env);
+      }
+    }
+    // Price relay: backend calls RELAY_URL/?symbol=...&kind=...
+    // If root path carries ?symbol=, treat as price relay, not as generic root text.
+    if (pathname === '/' && url.searchParams.has('symbol')) {
+      try {
+        if (env && env.RELAY_KEY) {
+          var pk = request.headers.get('X-Relay-Key') || '';
+          if (pk !== env.RELAY_KEY) {
+            return jsonResponse(401, { ok: false, error: 'relay_key_required' }, requestOrigin, env);
+          }
+        }
+        var _relay = await handlePriceRelay(url, env);
+        // Add CORS headers from corsHeaders
+        try {
+          var _ch = corsHeaders(requestOrigin, env);
+          Object.keys(_ch).forEach(function(k){ _relay.headers.set(k, _ch[k]); });
+        } catch (e) {}
+        return _relay;
+      } catch (e) {
+        return jsonResponse(502, { ok: false, error: 'price_relay_failed', detail: String(e && e.message || e) }, requestOrigin, env);
+      }
     }
     if (pathname === '/') {
       var rootHeaders = corsHeaders(requestOrigin, env);
