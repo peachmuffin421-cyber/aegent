@@ -99,7 +99,7 @@
 //           /crawler-enqueue, /reset, /order, /order/close, /notify-aea,
 //           /encode-syllable, /log, /fvg, /symbol, /projection/refresh
 //   DELETE: /orders, /fvg/<id>
-//   OPTIONS: CORS preflight for any listed path. Any other method is 405.
+//   OPTIONS: CORS preflight for listed paths only. Unlisted path: 404. Any other method is 405.
 //   GET /: generic relay text, no backend URL. GET /robots.txt: disallow.
 //   GET /favicon.ico: 204, no body.
 //
@@ -266,6 +266,11 @@ function syntheticRejectedResponse(requestOrigin, env) {
 }
 
 function containsSynthetic(value, depth) {
+  // FIX (audit): only a synthetic flag of true, or a numeric zero
+  // lattice_points / lattice, is synthetic. An empty array is WAITING,
+  // never synthetic: LATTICE [] EQUALS WAITING, NEVER 0. placeholder:true
+  // is not a synthetic flag. [] must pass through as a 200 WAITING body,
+  // not become a 502.
   if (depth > 50) {
     return false;
   }
@@ -281,16 +286,10 @@ function containsSynthetic(value, depth) {
     return false;
   }
   if (typeof value === 'string') {
-    if (value === 'synthetic') {
-      return true;
-    }
     return false;
   }
   if (typeof value === 'object') {
     if (value.synthetic === true || value.synthetic === 'true') {
-      return true;
-    }
-    if (value.placeholder === true) {
       return true;
     }
     if (value.lattice_points === 0 || value.lattice_points === '0') {
@@ -595,13 +594,9 @@ async function proxyToBackend(request, env, pathname, search, method) {
       upstreamHeaders['X-Telegram-Init-Data'] = initData;
     }
   } catch (e) {}
-  try {
-    var authz = request.headers.get('Authorization');
-    if (authz) {
-      upstreamHeaders['Authorization'] = authz;
-    }
-  } catch (e) {}
-  // X-Telegram-Init-Data and Authorization are forwarded for auth.
+  // FIX (audit): auth is X-Telegram-Init-Data only. Authorization is
+  // never forwarded to the backend.
+  // X-Telegram-Init-Data is forwarded for auth.
   try {
     var contentType = request.headers.get('Content-Type');
     if (contentType) {
@@ -714,6 +709,22 @@ async function proxyToBackend(request, env, pathname, search, method) {
   return new Response(text, { status: status, headers: outHeaders });
 }
 
+function isListedPath(pathname) {
+  // FIX: single allowlist predicate shared by OPTIONS and the method router.
+  // DELETE /fvg/<id> is listed via its /fvg/ prefix, matching the DELETE
+  // router below. Root, favicon and robots are listed as special cases.
+  if (pathname === '/' || pathname === '/favicon.ico' || pathname === '/robots.txt') {
+    return true;
+  }
+  if (GET_ROUTES[pathname] || POST_ROUTES[pathname] || DELETE_ROUTES[pathname]) {
+    return true;
+  }
+  if (pathname.indexOf('/fvg/') === 0) {
+    return true;
+  }
+  return false;
+}
+
 export default {
   async fetch(request, env, ctx) {
     var url = null;
@@ -732,6 +743,16 @@ export default {
     var pathname = normalizePathname(url.pathname);
     var search = url.search || '';
     if (method === 'OPTIONS') {
+      // FIX: preflight only for listed paths. Was 204 for any path,
+      // including unlisted ones, so a browser preflight succeeded for a
+      // route the worker would then 404. Unlisted preflight is 404 now.
+      if (!isListedPath(pathname)) {
+        return jsonResponse(404, {
+          ok: false,
+          error: 'not_found',
+          hint: 'Use /miniapp-state, single truth'
+        }, requestOrigin, env);
+      }
       var preflight = corsHeaders(requestOrigin, env);
       preflight['Content-Length'] = '0';
       preflight['Cache-Control'] = 'no-store';
